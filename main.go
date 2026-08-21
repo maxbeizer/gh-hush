@@ -2,13 +2,12 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"github.com/spf13/cobra"
+	"github.com/maxbeizer/gh-hush/cmd"
 )
 
 func main() {
@@ -16,29 +15,20 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
-	defer func() {
-		signal.Stop(c)
-		cancel()
-	}()
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
 
 	go func() {
-		for sig := range c {
+		select {
+		case sig := <-signals:
 			userMessages.Printf("received signal %v", sig)
 			cancel()
+		case <-ctx.Done():
 		}
 	}()
 
-	rootCmd := &cobra.Command{
-		Use:   "gh-extension-template",
-		Short: "TODO: describe your extension",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("Hello from gh-extension-template! Replace this with your implementation.")
-			return nil
-		},
-	}
-
+	rootCmd := cmd.NewRootCommand(os.Stdout, os.Stderr)
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		userMessages.Printf("error: %v", err)
 		os.Exit(1)

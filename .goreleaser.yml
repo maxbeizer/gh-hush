@@ -1,7 +1,7 @@
-project_name: gh-extension-template
+project_name: gh-hush
 
 builds:
-  - binary: gh-extension-template
+  - binary: gh-hush
     goos:
       - darwin
       - linux
