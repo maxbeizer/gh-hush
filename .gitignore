@@ -1,0 +1,15 @@
+# Binaries
+gh-*
+bin/
+*.exe
+dist/
+coverage.out
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
