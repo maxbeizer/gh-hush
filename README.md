@@ -22,7 +22,7 @@ make install-local
 ## Dry run
 
 ```bash
-gh hush --config ~/.config/gh-hush/policy.yml --dry-run
+gh hush --dry-run
 ```
 
 The report includes every notification's URL, subject type, repository, notification reason, proposed action, and exact matching rules with evidence.
@@ -39,7 +39,19 @@ Dry-run guarantees:
 
 ## Configuration
 
-Policy stays outside this repository. Pass an explicit path to a user-owned YAML file:
+Policy stays outside this repository. By default, gh-hush reads:
+
+```text
+$XDG_CONFIG_HOME/gh-hush/config.yml
+```
+
+When `XDG_CONFIG_HOME` is unset, it reads `~/.config/gh-hush/config.yml`. Override that location explicitly when needed:
+
+```bash
+gh hush --config /path/to/another-policy.yml --dry-run
+```
+
+The configuration schema is:
 
 ```yaml
 user: YOUR-GITHUB-LOGIN
@@ -85,7 +97,7 @@ If required subject or comment data cannot be fetched and no earlier keep rule a
 A dry run can write a private, non-overwriting JSON manifest:
 
 ```bash
-gh hush --config ~/.config/gh-hush/policy.yml --dry-run \
+gh hush --dry-run \
   --write-manifest manifest.json
 ```
 

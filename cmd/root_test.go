@@ -32,6 +32,20 @@ func TestNoImplicitOperation(t *testing.T) {
 	}
 }
 
+func TestConfigFlagIsAnOptionalOverride(t *testing.T) {
+	command := NewRootCommand(io.Discard, io.Discard)
+	configFlag := command.Flag("config")
+	if configFlag == nil {
+		t.Fatal("config flag is missing")
+	}
+	if configFlag.DefValue != "" {
+		t.Fatalf("config flag default = %q, want empty override", configFlag.DefValue)
+	}
+	if !strings.Contains(configFlag.Usage, "override") {
+		t.Fatalf("config flag usage = %q, want override wording", configFlag.Usage)
+	}
+}
+
 func TestClassifyNotificationsReportsProgressAndPreservesOrder(t *testing.T) {
 	const notificationCount = 30
 	threads := make([]model.Notification, notificationCount)

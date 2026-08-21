@@ -44,14 +44,18 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 				return errors.New("no operation selected; use --dry-run (GitHub mutations are not implemented)")
 			}
 			if configPath == "" {
-				return errors.New("--config PATH is required for --dry-run")
+				var err error
+				configPath, err = config.DefaultPath()
+				if err != nil {
+					return fmt.Errorf("resolve default config path: %w", err)
+				}
 			}
 
 			return runDryRun(cmd, stdout, stderr, configPath, writeManifest)
 		},
 	}
 
-	rootCmd.Flags().StringVar(&configPath, "config", "", "path to a user-owned YAML policy file")
+	rootCmd.Flags().StringVar(&configPath, "config", "", "override the default user-owned YAML policy path")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "classify notifications without mutating GitHub")
 	rootCmd.Flags().StringVar(&writeManifest, "write-manifest", "", "write proposed unsubscribe actions to a new JSON file")
 	rootCmd.Flags().StringVar(&applyManifest, "apply-manifest", "", "apply a reviewed manifest (not implemented in v1)")

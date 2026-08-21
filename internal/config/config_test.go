@@ -1,9 +1,33 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestDefaultPath(t *testing.T) {
+	t.Run("uses XDG config home", func(t *testing.T) {
+		configHome := t.TempDir()
+		t.Setenv("XDG_CONFIG_HOME", configHome)
+
+		got, err := DefaultPath()
+		if err != nil {
+			t.Fatalf("DefaultPath() error = %v", err)
+		}
+		want := filepath.Join(configHome, "gh-hush", "config.yml")
+		if got != want {
+			t.Fatalf("DefaultPath() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("rejects relative XDG config home", func(t *testing.T) {
+		t.Setenv("XDG_CONFIG_HOME", "relative")
+		if _, err := DefaultPath(); err == nil {
+			t.Fatal("DefaultPath() error = nil, want relative-path error")
+		}
+	})
+}
 
 func TestParseValidation(t *testing.T) {
 	valid := `

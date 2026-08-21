@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -16,6 +17,22 @@ var (
 	loginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
 	teamPattern  = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9_.-]+$`)
 )
+
+// DefaultPath returns the standard user-owned gh-hush configuration path.
+func DefaultPath() (string, error) {
+	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
+		if !filepath.IsAbs(configHome) {
+			return "", errors.New("XDG_CONFIG_HOME must be an absolute path")
+		}
+		return filepath.Join(configHome, "gh-hush", "config.yml"), nil
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("find home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "gh-hush", "config.yml"), nil
+}
 
 // Config is the user-owned v1 notification triage policy.
 type Config struct {
