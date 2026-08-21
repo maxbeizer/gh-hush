@@ -26,6 +26,7 @@ gh hush --config ~/.config/gh-hush/policy.yml --dry-run
 ```
 
 The report includes every notification's URL, subject type, repository, notification reason, proposed action, and exact matching rules with evidence.
+Progress is written to stderr while subject details are fetched, so large notification inboxes remain visibly active.
 
 Dry-run guarantees:
 

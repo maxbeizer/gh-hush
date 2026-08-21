@@ -6,19 +6,45 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/maxbeizer/gh-hush/internal/model"
 )
 
+const maxResponseBytes = 10 << 20
+
 // CLIClient uses the authenticated gh CLI session for GitHub API requests.
-type CLIClient struct{}
+type CLIClient struct {
+	httpClient *http.Client
+	token      string
+}
 
 // NewCLIClient creates a GitHub client backed by gh api.
-func NewCLIClient() *CLIClient {
-	return &CLIClient{}
+func NewCLIClient(ctx context.Context) (*CLIClient, error) {
+	token, err := runGH(ctx, "auth", "token")
+	if err != nil {
+		return nil, err
+	}
+	trimmedToken := strings.TrimSpace(string(token))
+	if trimmedToken == "" {
+		return nil, errors.New("gh auth token returned an empty token")
+	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.MaxIdleConns = 16
+	transport.MaxIdleConnsPerHost = 16
+	return &CLIClient{
+		httpClient: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: transport,
+		},
+		token: trimmedToken,
+	}, nil
 }
 
 // CurrentUser returns the login authenticated by gh.
@@ -74,11 +100,15 @@ func (c *CLIClient) Enrich(ctx context.Context, thread model.Notification) model
 }
 
 func (c *CLIClient) get(ctx context.Context, endpoint string, target any) error {
-	apiEndpoint, err := normalizeEndpoint(endpoint)
+	parsed, err := url.Parse(endpoint)
 	if err != nil {
-		return err
+		return fmt.Errorf("parse GitHub API endpoint %q: %w", endpoint, err)
 	}
-	output, err := runGH(ctx, "api", "-H", "Accept: application/vnd.github+json", apiEndpoint)
+	if parsed.IsAbs() {
+		return c.getHTTP(ctx, parsed, target)
+	}
+
+	output, err := runGH(ctx, "api", "-H", "Accept: application/vnd.github+json", endpoint)
 	if err != nil {
 		return err
 	}
@@ -88,21 +118,41 @@ func (c *CLIClient) get(ctx context.Context, endpoint string, target any) error 
 	return nil
 }
 
-func normalizeEndpoint(endpoint string) (string, error) {
-	parsed, err := url.Parse(endpoint)
+func (c *CLIClient) getHTTP(ctx context.Context, endpoint *url.URL, target any) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return "", fmt.Errorf("parse GitHub API endpoint %q: %w", endpoint, err)
+		return fmt.Errorf("create GitHub API request: %w", err)
 	}
-	if !parsed.IsAbs() {
-		return endpoint, nil
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("User-Agent", "gh-hush")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("request GitHub API endpoint %q: %w", endpoint.Redacted(), err)
 	}
-	if parsed.Path == "" {
-		return "", fmt.Errorf("GitHub API endpoint %q has no path", endpoint)
+	defer response.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read GitHub API response for %q: %w", endpoint.Redacted(), err)
 	}
-	if parsed.RawQuery != "" {
-		return parsed.EscapedPath() + "?" + parsed.RawQuery, nil
+	if len(body) > maxResponseBytes {
+		return fmt.Errorf("GitHub API response for %q exceeded %d bytes", endpoint.Redacted(), maxResponseBytes)
 	}
-	return parsed.EscapedPath(), nil
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf(
+			"GitHub API request for %q returned %s (request ID %q)",
+			endpoint.Redacted(),
+			response.Status,
+			response.Header.Get("X-GitHub-Request-Id"),
+		)
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return fmt.Errorf("decode GitHub API response for %q: %w", endpoint.Redacted(), err)
+	}
+	return nil
 }
 
 func requiresEnrichment(subjectType string) bool {

@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"github.com/maxbeizer/gh-hush/internal/config"
 	ghclient "github.com/maxbeizer/gh-hush/internal/github"
@@ -63,7 +65,10 @@ func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, configPath, 
 		return err
 	}
 
-	client := ghclient.NewCLIClient()
+	client, err := ghclient.NewCLIClient(ctxCommand.Context())
+	if err != nil {
+		return fmt.Errorf("initialize authenticated GitHub client: %w", err)
+	}
 	login, err := client.CurrentUser(ctxCommand.Context())
 	if err != nil {
 		return fmt.Errorf("authenticate with gh before running gh-hush: %w", err)
@@ -77,11 +82,7 @@ func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, configPath, 
 		return fmt.Errorf("fetch GitHub notifications: %w", err)
 	}
 
-	decisions := make([]model.Decision, 0, len(threads))
-	for _, thread := range threads {
-		enrichment := client.Enrich(ctxCommand.Context(), thread)
-		decisions = append(decisions, policy.Classify(cfg, thread, enrichment))
-	}
+	decisions := classifyNotifications(ctxCommand.Context(), stderr, cfg, client, threads)
 
 	if err := report.Write(stdout, decisions); err != nil {
 		return fmt.Errorf("write dry-run report: %w", err)
@@ -97,4 +98,66 @@ func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, configPath, 
 	}
 
 	return nil
+}
+
+type notificationEnricher interface {
+	Enrich(context.Context, model.Notification) model.Enrichment
+}
+
+func classifyNotifications(
+	ctx context.Context,
+	stderr io.Writer,
+	cfg config.Config,
+	client notificationEnricher,
+	threads []model.Notification,
+) []model.Decision {
+	if len(threads) == 0 {
+		return nil
+	}
+
+	const maxWorkers = 8
+	workerCount := min(maxWorkers, len(threads))
+	type result struct {
+		index    int
+		decision model.Decision
+	}
+
+	jobs := make(chan int)
+	results := make(chan result)
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				thread := threads[index]
+				enrichment := client.Enrich(ctx, thread)
+				results <- result{
+					index:    index,
+					decision: policy.Classify(cfg, thread, enrichment),
+				}
+			}
+		}()
+	}
+
+	go func() {
+		for index := range threads {
+			jobs <- index
+		}
+		close(jobs)
+		workers.Wait()
+		close(results)
+	}()
+
+	_, _ = fmt.Fprintf(stderr, "classifying %d notifications (read-only)...\n", len(threads))
+	decisions := make([]model.Decision, len(threads))
+	completed := 0
+	for classified := range results {
+		decisions[classified.index] = classified.decision
+		completed++
+		if completed%25 == 0 || completed == len(threads) {
+			_, _ = fmt.Fprintf(stderr, "classified %d/%d notifications\n", completed, len(threads))
+		}
+	}
+	return decisions
 }
