@@ -86,16 +86,23 @@ func TestClassifyPrecedence(t *testing.T) {
 		{
 			name:       "enrichment failure conservatively keeps ambiguous team review",
 			thread:     withSubject(base, "github/example", "PullRequest", "review_requested"),
-			enrichment: model.Enrichment{Err: errors.New("API unavailable")},
+			enrichment: model.Enrichment{SubjectErr: errors.New("API unavailable")},
 			wantAction: model.ActionKeep,
 			wantRules:  []string{ruleSafetyFailure},
 		},
 		{
 			name:       "known personal mention stays matched despite enrichment failure",
 			thread:     withSubject(base, "github/example", "Issue", "mention"),
-			enrichment: model.Enrichment{Err: errors.New("API unavailable")},
+			enrichment: model.Enrichment{SubjectErr: errors.New("API unavailable")},
 			wantAction: model.ActionKeep,
 			wantRules:  []string{rulePersonalMention},
+		},
+		{
+			name:       "irrelevant latest comment failure does not keep pull request",
+			thread:     withSubject(base, "github/example", "PullRequest", "subscribed"),
+			enrichment: model.Enrichment{LatestCommentErr: errors.New("API unavailable")},
+			wantAction: model.ActionUnsubscribe,
+			wantRules:  []string{ruleAllOther},
 		},
 		{
 			name:       "everything else unsubscribed",
@@ -121,6 +128,121 @@ func TestClassifyPrecedence(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEnrichmentRequirements(t *testing.T) {
+	cfg := testConfig()
+	base := model.Notification{
+		Reason:  "subscribed",
+		Subject: model.Subject{Type: "PullRequest"},
+	}
+
+	tests := []struct {
+		name string
+		cfg  config.Config
+		item model.Notification
+		want model.EnrichmentRequirements
+	}{
+		{
+			name: "pull request needs subject but not latest comment",
+			cfg:  cfg,
+			item: base,
+			want: model.EnrichmentRequirements{Subject: true},
+		},
+		{
+			name: "issue needs subject but not latest comment",
+			cfg:  cfg,
+			item: withSubject(base, "github/example", "Issue", "subscribed"),
+			want: model.EnrichmentRequirements{Subject: true},
+		},
+		{
+			name: "discussion team rule needs subject and latest comment",
+			cfg:  cfg,
+			item: withSubject(base, "github/example", "Discussion", "subscribed"),
+			want: model.EnrichmentRequirements{Subject: true, LatestComment: true},
+		},
+		{
+			name: "discussion team rule with no teams needs no enrichment",
+			cfg:  configWithOnlyEmptyDiscussionTeamRuleEnabled(cfg),
+			item: withSubject(base, "github/example", "Discussion", "subscribed"),
+			want: model.EnrichmentRequirements{},
+		},
+		{
+			name: "disabled evidence rules need no enrichment",
+			cfg:  configWithEvidenceRulesDisabled(cfg),
+			item: base,
+			want: model.EnrichmentRequirements{},
+		},
+		{
+			name: "assignment reason avoids assignment-only enrichment",
+			cfg:  configWithOnlyAssignmentEnabled(cfg),
+			item: withSubject(base, "github/example", "Issue", "assign"),
+			want: model.EnrichmentRequirements{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EnrichmentRequirements(tt.cfg, tt.item); got != tt.want {
+				t.Fatalf("EnrichmentRequirements() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDisabledRuleFailureDoesNotSafetyKeep(t *testing.T) {
+	cfg := configWithEvidenceRulesDisabled(testConfig())
+	thread := model.Notification{Reason: "subscribed", Repository: model.Repository{FullName: "github/example"}, Subject: model.Subject{Type: "PullRequest"}}
+	enrichment := model.Enrichment{SubjectErr: errors.New("irrelevant subject failure")}
+
+	decision := Classify(cfg, thread, enrichment)
+	if decision.Action != model.ActionUnsubscribe || decision.Rules[0].ID != ruleAllOther {
+		t.Fatalf("Classify() = action %q rules %#v, want catch-all unsubscribe", decision.Action, decision.Rules)
+	}
+	if decision.EnrichmentError != "" {
+		t.Fatalf("Classify() enrichment error = %q, want none", decision.EnrichmentError)
+	}
+}
+
+func TestEmptyDiscussionTeamListFailureDoesNotSafetyKeep(t *testing.T) {
+	cfg := configWithOnlyEmptyDiscussionTeamRuleEnabled(testConfig())
+	thread := model.Notification{Reason: "team_mention", Repository: model.Repository{FullName: "github/example"}, Subject: model.Subject{Type: "Discussion"}}
+	enrichment := model.Enrichment{
+		SubjectErr:       errors.New("subject API unavailable"),
+		LatestCommentErr: errors.New("comment API unavailable"),
+	}
+
+	decision := Classify(cfg, thread, enrichment)
+	if decision.Action != model.ActionUnsubscribe || decision.Rules[0].ID != ruleAllOther {
+		t.Fatalf("Classify() = action %q rules %#v, want catch-all unsubscribe", decision.Action, decision.Rules)
+	}
+	if decision.EnrichmentError != "" {
+		t.Fatalf("Classify() enrichment error = %q, want none", decision.EnrichmentError)
+	}
+}
+
+func configWithEvidenceRulesDisabled(cfg config.Config) config.Config {
+	disabled := false
+	cfg.Keep.PersonallyAssigned = &disabled
+	cfg.Keep.IndividuallyReviewRequested = &disabled
+	cfg.Keep.AuthoredByUser = &disabled
+	cfg.Keep.TeamMentionedDiscussions = &disabled
+	return cfg
+}
+
+func configWithOnlyAssignmentEnabled(cfg config.Config) config.Config {
+	cfg = configWithEvidenceRulesDisabled(cfg)
+	enabled := true
+	cfg.Keep.PersonallyAssigned = &enabled
+	return cfg
+}
+
+func configWithOnlyEmptyDiscussionTeamRuleEnabled(cfg config.Config) config.Config {
+	cfg = configWithEvidenceRulesDisabled(cfg)
+	enabled := true
+	cfg.Keep.TeamMentionedDiscussions = &enabled
+	cfg.DiscussionTeamSlugs = nil
+	return cfg
 }
 
 func testConfig() config.Config {

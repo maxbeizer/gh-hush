@@ -43,11 +43,19 @@ type Team struct {
 	Slug string `json:"slug"`
 }
 
-// Enrichment contains fetched subject evidence and any uncertainty.
+// EnrichmentRequirements identifies the evidence fields needed to evaluate the
+// enabled policy for one notification.
+type EnrichmentRequirements struct {
+	Subject       bool
+	LatestComment bool
+}
+
+// Enrichment contains fetched evidence and field-specific uncertainty.
 type Enrichment struct {
-	Subject       Resource
-	LatestComment Resource
-	Err           error
+	Subject          Resource
+	LatestComment    Resource
+	SubjectErr       error
+	LatestCommentErr error
 }
 
 // Action is a proposed notification subscription decision.

@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,6 +20,33 @@ const (
 	ruleSafetyFailure    = "safety.keep_on_enrichment_failure"
 	ruleAllOther         = "unsubscribe.all_other_notifications"
 )
+
+// EnrichmentRequirements returns the evidence fields needed to evaluate the
+// enabled rules for a notification. Notification reasons that conclusively
+// match a rule do not require the same rule's subject evidence.
+func EnrichmentRequirements(cfg config.Config, thread model.Notification) model.EnrichmentRequirements {
+	subjectType := thread.Subject.Type
+	requirements := model.EnrichmentRequirements{}
+
+	if config.Enabled(cfg.Keep.PersonallyAssigned) && thread.Reason != "assign" &&
+		(subjectType == "Issue" || subjectType == "PullRequest") {
+		requirements.Subject = true
+	}
+	if config.Enabled(cfg.Keep.IndividuallyReviewRequested) && subjectType == "PullRequest" {
+		requirements.Subject = true
+	}
+	if config.Enabled(cfg.Keep.AuthoredByUser) && thread.Reason != "author" &&
+		(subjectType == "Issue" || subjectType == "PullRequest" || subjectType == "Discussion") {
+		requirements.Subject = true
+	}
+	if config.Enabled(cfg.Keep.TeamMentionedDiscussions) && len(cfg.DiscussionTeamSlugs) > 0 &&
+		subjectType == "Discussion" {
+		requirements.Subject = true
+		requirements.LatestComment = true
+	}
+
+	return requirements
+}
 
 // Classify applies ordered, deterministic policy rules to a notification.
 func Classify(cfg config.Config, thread model.Notification, enrichment model.Enrichment) model.Decision {
@@ -77,12 +105,20 @@ func Classify(cfg config.Config, thread model.Notification, enrichment model.Enr
 		}
 	}
 
-	if enrichment.Err != nil {
-		decision.EnrichmentError = enrichment.Err.Error()
+	requirements := EnrichmentRequirements(cfg, thread)
+	var enrichmentErrors []error
+	if requirements.Subject && enrichment.SubjectErr != nil {
+		enrichmentErrors = append(enrichmentErrors, enrichment.SubjectErr)
+	}
+	if requirements.LatestComment && enrichment.LatestCommentErr != nil {
+		enrichmentErrors = append(enrichmentErrors, enrichment.LatestCommentErr)
+	}
+	if enrichmentErr := errors.Join(enrichmentErrors...); enrichmentErr != nil {
+		decision.EnrichmentError = enrichmentErr.Error()
 		if len(decision.Rules) == 0 {
 			decision.Rules = append(decision.Rules, model.Rule{
 				ID:       ruleSafetyFailure,
-				Evidence: fmt.Sprintf("required evidence was unavailable: %v", enrichment.Err),
+				Evidence: fmt.Sprintf("required evidence was unavailable: %v", enrichmentErr),
 			})
 		}
 	}

@@ -91,7 +91,7 @@ type trackingEnricher struct {
 	maxConcurrent int
 }
 
-func (e *trackingEnricher) Enrich(context.Context, model.Notification) model.Enrichment {
+func (e *trackingEnricher) Enrich(context.Context, model.Notification, model.EnrichmentRequirements) model.Enrichment {
 	e.mu.Lock()
 	e.concurrent++
 	e.maxConcurrent = max(e.maxConcurrent, e.concurrent)

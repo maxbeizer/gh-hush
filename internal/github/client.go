@@ -77,23 +77,19 @@ func (c *CLIClient) ListNotifications(ctx context.Context) ([]model.Notification
 	return notifications, nil
 }
 
-// Enrich fetches evidence needed by the deterministic keep rules.
-func (c *CLIClient) Enrich(ctx context.Context, thread model.Notification) model.Enrichment {
-	if !requiresEnrichment(thread.Subject.Type) {
-		return model.Enrichment{}
-	}
-	if thread.Subject.URL == "" {
-		return model.Enrichment{Err: errors.New("notification subject did not include an API URL")}
-	}
-
+// Enrich fetches only the evidence required by the enabled policy.
+func (c *CLIClient) Enrich(ctx context.Context, thread model.Notification, requirements model.EnrichmentRequirements) model.Enrichment {
 	var enrichment model.Enrichment
-	if err := c.get(ctx, thread.Subject.URL, &enrichment.Subject); err != nil {
-		enrichment.Err = fmt.Errorf("fetch subject: %w", err)
-		return enrichment
+	if requirements.Subject {
+		if thread.Subject.URL == "" {
+			enrichment.SubjectErr = errors.New("notification subject did not include an API URL")
+		} else if err := c.get(ctx, thread.Subject.URL, &enrichment.Subject); err != nil {
+			enrichment.SubjectErr = fmt.Errorf("fetch subject: %w", err)
+		}
 	}
-	if thread.Subject.LatestCommentURL != "" {
+	if requirements.LatestComment && thread.Subject.LatestCommentURL != "" {
 		if err := c.get(ctx, thread.Subject.LatestCommentURL, &enrichment.LatestComment); err != nil {
-			enrichment.Err = fmt.Errorf("fetch latest comment: %w", err)
+			enrichment.LatestCommentErr = fmt.Errorf("fetch latest comment: %w", err)
 		}
 	}
 	return enrichment
@@ -153,15 +149,6 @@ func (c *CLIClient) getHTTP(ctx context.Context, endpoint *url.URL, target any) 
 		return fmt.Errorf("decode GitHub API response for %q: %w", endpoint.Redacted(), err)
 	}
 	return nil
-}
-
-func requiresEnrichment(subjectType string) bool {
-	switch subjectType {
-	case "Issue", "PullRequest", "Discussion":
-		return true
-	default:
-		return false
-	}
 }
 
 func runGH(ctx context.Context, args ...string) ([]byte, error) {

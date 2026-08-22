@@ -105,7 +105,7 @@ func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, configPath, 
 }
 
 type notificationEnricher interface {
-	Enrich(context.Context, model.Notification) model.Enrichment
+	Enrich(context.Context, model.Notification, model.EnrichmentRequirements) model.Enrichment
 }
 
 func classifyNotifications(
@@ -135,7 +135,8 @@ func classifyNotifications(
 			defer workers.Done()
 			for index := range jobs {
 				thread := threads[index]
-				enrichment := client.Enrich(ctx, thread)
+				requirements := policy.EnrichmentRequirements(cfg, thread)
+				enrichment := client.Enrich(ctx, thread, requirements)
 				results <- result{
 					index:    index,
 					decision: policy.Classify(cfg, thread, enrichment),

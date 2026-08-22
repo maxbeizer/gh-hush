@@ -33,7 +33,7 @@ Dry-run guarantees:
 - uses the authenticated `gh` session and GitHub Notifications API;
 - makes no GitHub mutations, including no unsubscribe, mute, or mark-as-read calls;
 - evaluates keep rules before the catch-all unsubscribe rule;
-- treats missing evidence conservatively by keeping the thread and reporting the enrichment failure;
+- fetches only evidence required by enabled rules and conservatively keeps a thread when that required evidence is unavailable;
 - reports an explicit message when GitHub successfully returns zero notifications; and
 - fails visibly when authentication, notification fetching, configuration, or report generation fails.
 
@@ -90,7 +90,7 @@ Keep flags may be set to `false` to disable that rule. The catch-all unsubscribe
 5. Keep Discussions whose subject or latest comment contains an exact configured team mention.
 6. Recommend unsubscribe for everything else.
 
-If required subject or comment data cannot be fetched and no earlier keep rule already matched, the safety rule keeps the thread instead of guessing.
+If subject or comment data required by an enabled rule cannot be fetched and no earlier keep rule already matched, the safety rule keeps the thread instead of guessing. Failures for evidence that no enabled rule needs do not trigger a safety keep. An enabled Discussion team-mention rule with an empty `discussion_team_slugs` list requires no Discussion evidence because no team can match.
 
 ## Review manifest
 
