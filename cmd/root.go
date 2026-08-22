@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 
@@ -34,8 +35,9 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			configProvided := cmd.Flags().Changed("config")
 			if applyManifest != "" {
-				if dryRun || configPath != "" || writeManifest != "" {
+				if dryRun || configProvided || writeManifest != "" {
 					return errors.New("--apply-manifest cannot be combined with --dry-run, --config, or --write-manifest")
 				}
 				return fmt.Errorf("%w: %s", errApplyNotImplemented, applyManifest)
@@ -43,7 +45,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 			if !dryRun {
 				return errors.New("no operation selected; use --dry-run (GitHub mutations are not implemented)")
 			}
-			if configPath == "" {
+			if !configProvided {
 				var err error
 				configPath, err = config.DefaultPath()
 				if err != nil {
@@ -51,9 +53,18 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 				}
 			}
 
-			return runDryRun(cmd, stdout, stderr, configPath, writeManifest)
+			cfg, rawConfig, err := config.Load(configPath)
+			if err != nil {
+				if !configProvided && errors.Is(err, os.ErrNotExist) {
+					return cmd.Help()
+				}
+				return err
+			}
+			return runDryRun(cmd, stdout, stderr, cfg, rawConfig, writeManifest)
 		},
 	}
+	rootCmd.SetOut(stdout)
+	rootCmd.SetErr(stderr)
 
 	rootCmd.Flags().StringVar(&configPath, "config", "", "override the default user-owned YAML policy path")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "classify notifications without mutating GitHub")
@@ -63,12 +74,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	return rootCmd
 }
 
-func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, configPath, manifestPath string) error {
-	cfg, rawConfig, err := config.Load(configPath)
-	if err != nil {
-		return err
-	}
-
+func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, cfg config.Config, rawConfig []byte, manifestPath string) error {
 	client, err := ghclient.NewCLIClient(ctxCommand.Context())
 	if err != nil {
 		return fmt.Errorf("initialize authenticated GitHub client: %w", err)
