@@ -18,10 +18,13 @@ import (
 
 const maxResponseBytes = 10 << 20
 
+type commandRunner func(context.Context, ...string) ([]byte, error)
+
 // CLIClient uses the authenticated gh CLI session for GitHub API requests.
 type CLIClient struct {
-	httpClient *http.Client
-	token      string
+	httpClient    *http.Client
+	token         string
+	commandRunner commandRunner
 }
 
 // NewCLIClient creates a GitHub client backed by gh api.
@@ -43,7 +46,8 @@ func NewCLIClient(ctx context.Context) (*CLIClient, error) {
 			Timeout:   30 * time.Second,
 			Transport: transport,
 		},
-		token: trimmedToken,
+		token:         trimmedToken,
+		commandRunner: runGH,
 	}, nil
 }
 
@@ -61,7 +65,7 @@ func (c *CLIClient) CurrentUser(ctx context.Context) (string, error) {
 
 // ListNotifications fetches every page of the authenticated user's notifications.
 func (c *CLIClient) ListNotifications(ctx context.Context) ([]model.Notification, error) {
-	output, err := runGH(ctx, "api", "--paginate", "--slurp", "-H", "Accept: application/vnd.github+json", "/notifications?per_page=100")
+	output, err := c.run(ctx, "api", "--paginate", "--slurp", "-H", "Accept: application/vnd.github+json", "/notifications?per_page=100")
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +108,7 @@ func (c *CLIClient) get(ctx context.Context, endpoint string, target any) error 
 		return c.getHTTP(ctx, parsed, target)
 	}
 
-	output, err := runGH(ctx, "api", "-H", "Accept: application/vnd.github+json", endpoint)
+	output, err := c.run(ctx, "api", "-H", "Accept: application/vnd.github+json", endpoint)
 	if err != nil {
 		return err
 	}
@@ -149,6 +153,13 @@ func (c *CLIClient) getHTTP(ctx context.Context, endpoint *url.URL, target any) 
 		return fmt.Errorf("decode GitHub API response for %q: %w", endpoint.Redacted(), err)
 	}
 	return nil
+}
+
+func (c *CLIClient) run(ctx context.Context, args ...string) ([]byte, error) {
+	if c.commandRunner != nil {
+		return c.commandRunner(ctx, args...)
+	}
+	return runGH(ctx, args...)
 }
 
 func runGH(ctx context.Context, args ...string) ([]byte, error) {

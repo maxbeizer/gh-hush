@@ -2,13 +2,158 @@ package github
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/maxbeizer/gh-hush/internal/model"
 )
+
+func TestListNotificationsInvokesGHAndFlattensPages(t *testing.T) {
+	var gotArgs []string
+	client := &CLIClient{commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
+		gotArgs = append([]string(nil), args...)
+		return []byte(`[[{"id":"first"},{"id":"second"}],[{"id":"third"}]]`), nil
+	}}
+
+	notifications, err := client.ListNotifications(context.Background())
+	if err != nil {
+		t.Fatalf("ListNotifications() error = %v", err)
+	}
+	wantArgs := []string{
+		"api", "--paginate", "--slurp", "-H",
+		"Accept: application/vnd.github+json", "/notifications?per_page=100",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("ListNotifications() gh args = %#v, want %#v", gotArgs, wantArgs)
+	}
+	wantIDs := []string{"first", "second", "third"}
+	gotIDs := make([]string, len(notifications))
+	for i := range notifications {
+		gotIDs[i] = notifications[i].ID
+	}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("ListNotifications() IDs = %#v, want %#v", gotIDs, wantIDs)
+	}
+}
+
+func TestListNotificationsEmptyResponse(t *testing.T) {
+	client := &CLIClient{commandRunner: func(context.Context, ...string) ([]byte, error) {
+		return []byte(`[]`), nil
+	}}
+
+	notifications, err := client.ListNotifications(context.Background())
+	if err != nil {
+		t.Fatalf("ListNotifications() error = %v", err)
+	}
+	if len(notifications) != 0 {
+		t.Fatalf("ListNotifications() returned %d notifications, want 0", len(notifications))
+	}
+}
+
+func TestListNotificationsErrors(t *testing.T) {
+	runnerErr := errors.New("runner failed")
+	tests := []struct {
+		name        string
+		output      string
+		runnerErr   error
+		wantError   string
+		wantWrapped error
+	}{
+		{
+			name:      "malformed JSON",
+			output:    `not JSON`,
+			wantError: "decode paginated notifications",
+		},
+		{
+			name:        "command runner failure",
+			runnerErr:   runnerErr,
+			wantError:   runnerErr.Error(),
+			wantWrapped: runnerErr,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &CLIClient{commandRunner: func(context.Context, ...string) ([]byte, error) {
+				return []byte(test.output), test.runnerErr
+			}}
+			_, err := client.ListNotifications(context.Background())
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("ListNotifications() error = %v, want error containing %q", err, test.wantError)
+			}
+			if test.wantWrapped != nil && !errors.Is(err, test.wantWrapped) {
+				t.Fatalf("ListNotifications() error = %v, want wrapped %v", err, test.wantWrapped)
+			}
+		})
+	}
+}
+
+func TestGetHTTPResponseErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		handler   http.HandlerFunc
+		wantError string
+	}{
+		{
+			name: "non-2xx includes request ID",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("X-GitHub-Request-Id", "request-123")
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			},
+			wantError: `returned 503 Service Unavailable (request ID "request-123")`,
+		},
+		{
+			name: "malformed JSON",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"id":`))
+			},
+			wantError: "decode GitHub API response",
+		},
+		{
+			name: "oversized response",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = fmt.Fprint(w, strings.Repeat("x", maxResponseBytes+1))
+			},
+			wantError: fmt.Sprintf("exceeded %d bytes", maxResponseBytes),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(test.handler)
+			defer server.Close()
+			client := &CLIClient{httpClient: server.Client(), token: "test"}
+
+			var target model.Resource
+			err := client.get(context.Background(), server.URL+"/resource", &target)
+			if err == nil || !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("get() error = %v, want error containing %q", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestEnrichReportsMissingRequiredSubjectURL(t *testing.T) {
+	client := &CLIClient{commandRunner: func(context.Context, ...string) ([]byte, error) {
+		t.Fatal("command runner called for missing subject URL")
+		return nil, nil
+	}}
+
+	enrichment := client.Enrich(
+		context.Background(),
+		model.Notification{},
+		model.EnrichmentRequirements{Subject: true},
+	)
+	if enrichment.SubjectErr == nil || enrichment.SubjectErr.Error() != "notification subject did not include an API URL" {
+		t.Fatalf("Enrich() subject error = %v", enrichment.SubjectErr)
+	}
+}
 
 func TestEnrichFetchesOnlyRequiredEvidence(t *testing.T) {
 	var mu sync.Mutex
