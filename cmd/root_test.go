@@ -203,7 +203,7 @@ func TestApplyUnsubscriptionsAppliesOnlyDisplayedUnsubscribeDecisions(t *testing
 	if got := strings.Join(client.ids, ","); got != "first,third" {
 		t.Fatalf("unsubscribe IDs = %q, want first,third", got)
 	}
-	if !strings.Contains(progress.String(), "applied 1/2") {
+	if !strings.Contains(progress.String(), "completed 1/2 notification updates") {
 		t.Fatalf("progress = %q, want partial result", progress.String())
 	}
 }

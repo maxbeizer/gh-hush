@@ -81,14 +81,20 @@ func (c *CLIClient) ListNotifications(ctx context.Context) ([]model.Notification
 	return notifications, nil
 }
 
-// UnsubscribeNotification removes the authenticated user's subscription to a notification thread.
+// UnsubscribeNotification removes the authenticated user's subscription to a
+// notification thread and marks the current notification as read. GitHub keeps
+// an unsubscribed notification unread until it is marked read, so both requests
+// are required to remove a successfully triaged thread from the next preview.
 func (c *CLIClient) UnsubscribeNotification(ctx context.Context, threadID string) error {
 	if strings.TrimSpace(threadID) == "" {
 		return errors.New("notification thread ID is empty")
 	}
-	endpoint := "/notifications/threads/" + url.PathEscape(threadID) + "/subscription"
-	if _, err := c.run(ctx, "api", "--method", http.MethodDelete, "-H", "Accept: application/vnd.github+json", endpoint); err != nil {
+	threadEndpoint := "/notifications/threads/" + url.PathEscape(threadID)
+	if _, err := c.run(ctx, "api", "--method", http.MethodDelete, "-H", "Accept: application/vnd.github+json", threadEndpoint+"/subscription"); err != nil {
 		return fmt.Errorf("unsubscribe notification thread %q: %w", threadID, err)
+	}
+	if _, err := c.run(ctx, "api", "--method", http.MethodPatch, "-H", "Accept: application/vnd.github+json", threadEndpoint); err != nil {
+		return fmt.Errorf("mark unsubscribed notification thread %q as read: %w", threadID, err)
 	}
 	return nil
 }

@@ -42,22 +42,78 @@ func TestListNotificationsInvokesGHAndFlattensPages(t *testing.T) {
 	}
 }
 
-func TestUnsubscribeNotificationInvokesGitHubDelete(t *testing.T) {
-	var gotArgs []string
+func TestUnsubscribeNotificationUnsubscribesAndMarksThreadRead(t *testing.T) {
+	var gotCalls [][]string
 	client := &CLIClient{commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
-		gotArgs = append([]string(nil), args...)
+		gotCalls = append(gotCalls, append([]string(nil), args...))
 		return nil, nil
 	}}
 
 	if err := client.UnsubscribeNotification(context.Background(), "12345"); err != nil {
 		t.Fatalf("UnsubscribeNotification() error = %v", err)
 	}
-	wantArgs := []string{
-		"api", "--method", "DELETE", "-H",
-		"Accept: application/vnd.github+json", "/notifications/threads/12345/subscription",
+	wantCalls := [][]string{
+		{
+			"api", "--method", "DELETE", "-H",
+			"Accept: application/vnd.github+json", "/notifications/threads/12345/subscription",
+		},
+		{
+			"api", "--method", "PATCH", "-H",
+			"Accept: application/vnd.github+json", "/notifications/threads/12345",
+		},
 	}
-	if !reflect.DeepEqual(gotArgs, wantArgs) {
-		t.Fatalf("UnsubscribeNotification() gh args = %#v, want %#v", gotArgs, wantArgs)
+	if !reflect.DeepEqual(gotCalls, wantCalls) {
+		t.Fatalf("UnsubscribeNotification() gh calls = %#v, want %#v", gotCalls, wantCalls)
+	}
+}
+
+func TestUnsubscribeNotificationReportsMarkReadFailureAfterUnsubscribing(t *testing.T) {
+	markReadErr := errors.New("patch failed")
+	var gotCalls [][]string
+	client := &CLIClient{commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
+		gotCalls = append(gotCalls, append([]string(nil), args...))
+		if len(gotCalls) == 2 {
+			return nil, markReadErr
+		}
+		return nil, nil
+	}}
+
+	err := client.UnsubscribeNotification(context.Background(), "12345")
+	if !errors.Is(err, markReadErr) {
+		t.Fatalf("UnsubscribeNotification() error = %v, want wrapped %v", err, markReadErr)
+	}
+	if !strings.Contains(err.Error(), "mark unsubscribed notification thread \"12345\" as read") {
+		t.Fatalf("UnsubscribeNotification() error = %q, want mark-as-read context", err)
+	}
+	wantCalls := [][]string{
+		{
+			"api", "--method", "DELETE", "-H",
+			"Accept: application/vnd.github+json", "/notifications/threads/12345/subscription",
+		},
+		{
+			"api", "--method", "PATCH", "-H",
+			"Accept: application/vnd.github+json", "/notifications/threads/12345",
+		},
+	}
+	if !reflect.DeepEqual(gotCalls, wantCalls) {
+		t.Fatalf("UnsubscribeNotification() gh calls = %#v, want %#v", gotCalls, wantCalls)
+	}
+}
+
+func TestUnsubscribeNotificationDoesNotMarkReadWhenUnsubscribeFails(t *testing.T) {
+	unsubscribeErr := errors.New("delete failed")
+	calls := 0
+	client := &CLIClient{commandRunner: func(_ context.Context, _ ...string) ([]byte, error) {
+		calls++
+		return nil, unsubscribeErr
+	}}
+
+	err := client.UnsubscribeNotification(context.Background(), "12345")
+	if !errors.Is(err, unsubscribeErr) {
+		t.Fatalf("UnsubscribeNotification() error = %v, want wrapped %v", err, unsubscribeErr)
+	}
+	if calls != 1 {
+		t.Fatalf("command runner calls = %d, want 1", calls)
 	}
 }
 

@@ -108,7 +108,7 @@ Keep flags may be set to `false` to disable that rule. The catch-all unsubscribe
 
 If subject or comment data required by an enabled rule cannot be fetched and no earlier keep rule already matched, the safety rule keeps the thread instead of guessing. Failures for evidence that no enabled rule needs do not trigger a safety keep. An enabled Discussion team-mention rule with an empty `discussion_team_slugs` list requires no Discussion evidence because no team can match.
 
-Unsubscribing removes the current thread subscription; it does not ignore the thread forever. GitHub may subscribe you again after later activity such as a new mention.
+Applying an unsubscribe removes the current thread subscription and marks its existing notification as read, so it does not appear in the next preview. It does not ignore the thread forever: GitHub may subscribe you again after later activity such as a new mention.
 
 There is no scheduler or recurring mode. Run `gh hush` only when you choose to triage notifications.
 

@@ -154,9 +154,9 @@ func isTerminal(stream any) bool {
 
 func applyUnsubscriptions(ctx context.Context, stderr io.Writer, client notificationUnsubscriber, decisions []model.Decision) error {
 	total := countUnsubscriptions(decisions)
-	_, _ = fmt.Fprintf(stderr, "applying %d unsubscriptions...\n", total)
+	_, _ = fmt.Fprintf(stderr, "applying %d notification updates (unsubscribe and mark read)...\n", total)
 
-	applied := 0
+	completed := 0
 	var failures []error
 	for _, decision := range decisions {
 		if decision.Action != model.ActionUnsubscribe {
@@ -166,11 +166,11 @@ func applyUnsubscriptions(ctx context.Context, stderr io.Writer, client notifica
 			failures = append(failures, fmt.Errorf("%s: %w", decision.URL, err))
 			continue
 		}
-		applied++
+		completed++
 	}
-	_, _ = fmt.Fprintf(stderr, "applied %d/%d unsubscriptions\n", applied, total)
+	_, _ = fmt.Fprintf(stderr, "completed %d/%d notification updates\n", completed, total)
 	if len(failures) > 0 {
-		return fmt.Errorf("failed to apply %d unsubscriptions: %w", len(failures), errors.Join(failures...))
+		return fmt.Errorf("failed to complete %d notification updates: %w", len(failures), errors.Join(failures...))
 	}
 	return nil
 }
