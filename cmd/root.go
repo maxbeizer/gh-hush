@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -12,21 +11,16 @@ import (
 
 	"github.com/maxbeizer/gh-hush/internal/config"
 	ghclient "github.com/maxbeizer/gh-hush/internal/github"
-	"github.com/maxbeizer/gh-hush/internal/manifest"
 	"github.com/maxbeizer/gh-hush/internal/model"
 	"github.com/maxbeizer/gh-hush/internal/policy"
 	"github.com/maxbeizer/gh-hush/internal/report"
 	"github.com/spf13/cobra"
 )
 
-var errApplyNotImplemented = errors.New("manifest apply is intentionally unavailable in v1; review dry-run behavior before adding mutations")
-
 // NewRootCommand constructs the gh-hush command.
 func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	var configPath string
 	var dryRun bool
-	var writeManifest string
-	var applyManifest string
 
 	rootCmd := &cobra.Command{
 		Use:           "gh-hush",
@@ -36,12 +30,6 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			configProvided := cmd.Flags().Changed("config")
-			if applyManifest != "" {
-				if dryRun || configProvided || writeManifest != "" {
-					return errors.New("--apply-manifest cannot be combined with --dry-run, --config, or --write-manifest")
-				}
-				return fmt.Errorf("%w: %s", errApplyNotImplemented, applyManifest)
-			}
 			if !dryRun {
 				return errors.New("no operation selected; use --dry-run (GitHub mutations are not implemented)")
 			}
@@ -53,14 +41,14 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 				}
 			}
 
-			cfg, rawConfig, err := config.Load(configPath)
+			cfg, _, err := config.Load(configPath)
 			if err != nil {
 				if !configProvided && errors.Is(err, os.ErrNotExist) {
 					return cmd.Help()
 				}
 				return err
 			}
-			return runDryRun(cmd, stdout, stderr, cfg, rawConfig, writeManifest)
+			return runDryRun(cmd, stdout, stderr, cfg)
 		},
 	}
 	rootCmd.SetOut(stdout)
@@ -68,13 +56,11 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 
 	rootCmd.Flags().StringVar(&configPath, "config", "", "override the default user-owned YAML policy path")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "classify notifications without mutating GitHub")
-	rootCmd.Flags().StringVar(&writeManifest, "write-manifest", "", "write proposed unsubscribe actions to a new JSON file")
-	rootCmd.Flags().StringVar(&applyManifest, "apply-manifest", "", "apply a reviewed manifest (not implemented in v1)")
 
 	return rootCmd
 }
 
-func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, cfg config.Config, rawConfig []byte, manifestPath string) error {
+func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, cfg config.Config) error {
 	client, err := ghclient.NewCLIClient(ctxCommand.Context())
 	if err != nil {
 		return fmt.Errorf("initialize authenticated GitHub client: %w", err)
@@ -96,15 +82,6 @@ func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, cfg config.C
 
 	if err := report.Write(stdout, decisions); err != nil {
 		return fmt.Errorf("write dry-run report: %w", err)
-	}
-
-	if manifestPath != "" {
-		configHash := fmt.Sprintf("%x", sha256.Sum256(rawConfig))
-		m := manifest.Build(login, configHash, decisions)
-		if err := manifest.WriteNew(manifestPath, m); err != nil {
-			return fmt.Errorf("write manifest: %w", err)
-		}
-		_, _ = fmt.Fprintf(stderr, "wrote review-required manifest to %s\n", manifestPath)
 	}
 
 	return nil

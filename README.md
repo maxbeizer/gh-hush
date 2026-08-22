@@ -93,20 +93,6 @@ Keep flags may be set to `false` to disable that rule. The catch-all unsubscribe
 
 If subject or comment data required by an enabled rule cannot be fetched and no earlier keep rule already matched, the safety rule keeps the thread instead of guessing. Failures for evidence that no enabled rule needs do not trigger a safety keep. An enabled Discussion team-mention rule with an empty `discussion_team_slugs` list requires no Discussion evidence because no team can match.
 
-## Review manifest
-
-A dry run can write a private, non-overwriting JSON manifest:
-
-```bash
-gh hush --dry-run \
-  --write-manifest manifest.json
-```
-
-The manifest contains only explicit unsubscribe recommendations, their thread IDs, policy evidence, the authenticated user, a configuration hash, a schema version, and `"reviewed": false`.
-
-> [!WARNING]
-> Applying a manifest will be destructive because it will unsubscribe from GitHub threads. `--apply-manifest` is intentionally unavailable in v1. A future implementation must require an explicitly reviewed manifest, verify the authenticated user and schema, and operate only on the thread IDs listed in that manifest. It must never classify and unsubscribe everything in one step.
-
 There is no scheduler or recurring mode. Run `gh hush` only when you choose to triage notifications.
 
 ## Development
