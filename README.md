@@ -34,8 +34,9 @@ Dry-run guarantees:
 - makes no GitHub mutations, including no unsubscribe, mute, or mark-as-read calls;
 - evaluates keep rules before the catch-all unsubscribe rule;
 - fetches only evidence required by enabled rules and conservatively keeps a thread when that required evidence is unavailable;
-- reports an explicit message when GitHub successfully returns zero notifications; and
-- fails visibly when authentication, notification fetching, configuration, or report generation fails.
+- reports an explicit message when GitHub successfully returns zero notifications;
+- shows command help when the default configuration file is missing; and
+- fails visibly when authentication, notification fetching, report generation, or other configuration errors occur, including a missing explicitly provided configuration.
 
 ## Configuration
 

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -43,6 +44,38 @@ func TestConfigFlagIsAnOptionalOverride(t *testing.T) {
 	}
 	if !strings.Contains(configFlag.Usage, "override") {
 		t.Fatalf("config flag usage = %q, want override wording", configFlag.Usage)
+	}
+}
+
+func TestMissingDefaultConfigShowsHelp(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stdout strings.Builder
+	command := NewRootCommand(&stdout, io.Discard)
+	command.SetArgs([]string{"--dry-run"})
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v, want help without an error", err)
+	}
+	for _, expected := range []string{"Usage:", "--dry-run", "--config"} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Errorf("help output missing %q", expected)
+		}
+	}
+}
+
+func TestMissingExplicitConfigReturnsError(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	explicitPath := filepath.Join(t.TempDir(), "missing.yml")
+	var stdout strings.Builder
+	command := NewRootCommand(&stdout, io.Discard)
+	command.SetArgs([]string{"--dry-run", "--config", explicitPath})
+
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "read config") {
+		t.Fatalf("Execute() error = %v, want config read error", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no help output", stdout.String())
 	}
 }
 
