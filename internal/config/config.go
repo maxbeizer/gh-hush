@@ -14,8 +14,8 @@ import (
 )
 
 var (
-	loginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
-	teamPattern  = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9_.-]+$`)
+	loginPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+	teamSlugPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 )
 
 // DefaultPath returns the standard user-owned gh-hush configuration path.
@@ -101,10 +101,10 @@ func Parse(data []byte) (Config, error) {
 // Validate checks the complete v1 schema and safety invariants.
 func (c Config) Validate() error {
 	var validationErrors []error
-	if !loginPattern.MatchString(c.User) {
+	if !validGitHubLogin(c.User) {
 		validationErrors = append(validationErrors, errors.New("user must be a valid GitHub login"))
 	}
-	if !loginPattern.MatchString(c.GitHubOrganization) {
+	if !validGitHubLogin(c.GitHubOrganization) {
 		validationErrors = append(validationErrors, errors.New("github_organization must be a valid GitHub organization login"))
 	}
 	if c.RunMode != "ad_hoc" {
@@ -147,11 +147,12 @@ func (c Config) Validate() error {
 
 	seenTeams := make(map[string]struct{}, len(c.DiscussionTeamSlugs))
 	for _, team := range c.DiscussionTeamSlugs {
-		if !teamPattern.MatchString(team) {
+		parts := strings.Split(team, "/")
+		if len(parts) != 2 || !validGitHubLogin(parts[0]) || !teamSlugPattern.MatchString(parts[1]) {
 			validationErrors = append(validationErrors, fmt.Errorf("discussion_team_slugs entry %q must use org/team-slug form", team))
 			continue
 		}
-		org := strings.SplitN(team, "/", 2)[0]
+		org := parts[0]
 		if !strings.EqualFold(org, c.GitHubOrganization) {
 			validationErrors = append(validationErrors, fmt.Errorf("discussion_team_slugs entry %q must belong to github_organization %q", team, c.GitHubOrganization))
 		}
@@ -163,6 +164,12 @@ func (c Config) Validate() error {
 	}
 
 	return errors.Join(validationErrors...)
+}
+
+func validGitHubLogin(login string) bool {
+	return loginPattern.MatchString(login) &&
+		!strings.HasSuffix(login, "-") &&
+		!strings.Contains(login, "--")
 }
 
 // Enabled reports whether a required policy flag is enabled.
