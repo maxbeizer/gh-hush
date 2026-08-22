@@ -33,9 +33,6 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			configProvided := cmd.Flags().Changed("config")
-			if dryRun && confirm {
-				return errors.New("--dry-run and --confirm cannot be used together")
-			}
 			if !configProvided {
 				var err error
 				configPath, err = config.DefaultPath()
@@ -60,6 +57,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	rootCmd.Flags().StringVar(&configPath, "config", "", "override the default user-owned YAML policy path")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "classify notifications without prompting or mutating GitHub")
 	rootCmd.Flags().BoolVar(&confirm, "confirm", false, "apply proposed unsubscriptions without prompting")
+	rootCmd.MarkFlagsMutuallyExclusive("dry-run", "confirm")
 
 	return rootCmd
 }
@@ -85,7 +83,7 @@ func run(ctxCommand *cobra.Command, stdout, stderr io.Writer, cfg config.Config,
 	decisions := classifyNotifications(ctxCommand.Context(), stderr, cfg, client, threads)
 
 	if err := report.Write(stdout, decisions); err != nil {
-		return fmt.Errorf("write dry-run report: %w", err)
+		return fmt.Errorf("write preview report: %w", err)
 	}
 
 	unsubscribeCount := countUnsubscriptions(decisions)
@@ -93,8 +91,8 @@ func run(ctxCommand *cobra.Command, stdout, stderr io.Writer, cfg config.Config,
 		return nil
 	}
 	if !confirm {
-		if !isTerminal(ctxCommand.InOrStdin()) || !isTerminal(ctxCommand.OutOrStdout()) {
-			_, _ = fmt.Fprintln(stderr, "Dry run only: input and preview output must both be interactive terminals. Re-run with --confirm to apply these changes.")
+		if !isTerminal(ctxCommand.InOrStdin()) || !isTerminal(ctxCommand.OutOrStdout()) || !isTerminal(ctxCommand.ErrOrStderr()) {
+			_, _ = fmt.Fprintln(stderr, "Dry run only: input, preview output, and prompt output must all be interactive terminals. Re-run with --confirm to apply these changes.")
 			return nil
 		}
 		approved, err := promptForConfirmation(ctxCommand.InOrStdin(), stderr, unsubscribeCount)

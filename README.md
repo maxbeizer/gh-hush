@@ -39,7 +39,7 @@ To apply the preview without an interactive prompt, such as from automation, exp
 gh hush --confirm
 ```
 
-A no-flag invocation remains read-only unless both its input and preview output are interactive terminals. Redirected or piped previews therefore require `--confirm` to apply changes. `--dry-run` and `--confirm` cannot be combined.
+A no-flag invocation remains read-only unless its input, preview output, and prompt output (stderr) are all interactive terminals. Redirected or piped input or output therefore requires `--confirm` to apply changes. `--dry-run` and `--confirm` cannot be combined.
 
 The report includes every notification's URL, subject type, repository, notification reason, proposed action, and exact matching rules with evidence. Progress is written to stderr while subject details are fetched, so large notification inboxes remain visibly active.
 
@@ -107,6 +107,8 @@ Keep flags may be set to `false` to disable that rule. The catch-all unsubscribe
 6. Propose unsubscribing from everything else.
 
 If subject or comment data required by an enabled rule cannot be fetched and no earlier keep rule already matched, the safety rule keeps the thread instead of guessing. Failures for evidence that no enabled rule needs do not trigger a safety keep. An enabled Discussion team-mention rule with an empty `discussion_team_slugs` list requires no Discussion evidence because no team can match.
+
+Unsubscribing removes the current thread subscription; it does not ignore the thread forever. GitHub may subscribe you again after later activity such as a new mention.
 
 There is no scheduler or recurring mode. Run `gh hush` only when you choose to triage notifications.
 

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,14 +15,14 @@ import (
 	"github.com/maxbeizer/gh-hush/internal/model"
 )
 
-func TestDefaultOperationIsDryRun(t *testing.T) {
+func TestDefaultOperationShowsHelpWhenConfigMissing(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var stdout strings.Builder
 	command := NewRootCommand(&stdout, io.Discard)
 	command.SetArgs(nil)
 
 	if err := command.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v, want default dry-run help without an error", err)
+		t.Fatalf("Execute() error = %v, want help without an error", err)
 	}
 	for _, expected := range []string{"Usage:", "--dry-run", "--confirm"} {
 		if !strings.Contains(stdout.String(), expected) {
@@ -35,7 +36,7 @@ func TestDryRunAndConfirmAreMutuallyExclusive(t *testing.T) {
 	command.SetArgs([]string{"--dry-run", "--confirm"})
 
 	err := command.Execute()
-	if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+	if err == nil || !strings.Contains(err.Error(), "dry-run confirm") {
 		t.Fatalf("Execute() error = %v, want mutually exclusive flags error", err)
 	}
 }
@@ -160,7 +161,7 @@ type recordingUnsubscriber struct {
 func (u *recordingUnsubscriber) UnsubscribeNotification(_ context.Context, id string) error {
 	u.ids = append(u.ids, id)
 	if id == u.failID {
-		return context.DeadlineExceeded
+		return errors.New("boom")
 	}
 	return nil
 }

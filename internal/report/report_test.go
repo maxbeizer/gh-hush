@@ -8,7 +8,7 @@ import (
 	"github.com/maxbeizer/gh-hush/internal/model"
 )
 
-func TestWriteIncludesDryRunGuaranteesAndDecisionFields(t *testing.T) {
+func TestWriteIncludesPreviewGuaranteesAndDecisionFields(t *testing.T) {
 	decision := model.Decision{
 		Thread: model.Notification{
 			Reason:     "mention",
@@ -31,7 +31,7 @@ func TestWriteIncludesDryRunGuaranteesAndDecisionFields(t *testing.T) {
 	}
 
 	for _, required := range []string{
-		"dry run (read-only)",
+		"gh-hush preview",
 		"No GitHub mutations were made",
 		"URL:",
 		"Subject type:",
@@ -40,7 +40,7 @@ func TestWriteIncludesDryRunGuaranteesAndDecisionFields(t *testing.T) {
 		"Proposed action:",
 		"Matching rules:",
 		"keep.personal_mention",
-		"Summary:",
+		"Summary: 1 keep, 0 propose unsubscribe, 1 total",
 	} {
 		if !strings.Contains(output.String(), required) {
 			t.Errorf("Write() output missing %q", required)
