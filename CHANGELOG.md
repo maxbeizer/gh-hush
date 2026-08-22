@@ -9,4 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 
 ### Added
 
-- Initial release
+- Default preview-first workflow with an interactive, default-No confirmation prompt.
+- `--confirm` for explicitly applying proposed unsubscriptions without a prompt.
+- `--dry-run` for a guaranteed preview-only run.
+- Initial release.

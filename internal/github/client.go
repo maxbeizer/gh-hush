@@ -81,6 +81,18 @@ func (c *CLIClient) ListNotifications(ctx context.Context) ([]model.Notification
 	return notifications, nil
 }
 
+// UnsubscribeNotification removes the authenticated user's subscription to a notification thread.
+func (c *CLIClient) UnsubscribeNotification(ctx context.Context, threadID string) error {
+	if strings.TrimSpace(threadID) == "" {
+		return errors.New("notification thread ID is empty")
+	}
+	endpoint := "/notifications/threads/" + url.PathEscape(threadID) + "/subscription"
+	if _, err := c.run(ctx, "api", "--method", http.MethodDelete, "-H", "Accept: application/vnd.github+json", endpoint); err != nil {
+		return fmt.Errorf("unsubscribe notification thread %q: %w", threadID, err)
+	}
+	return nil
+}
+
 // Enrich fetches only the evidence required by the enabled policy.
 func (c *CLIClient) Enrich(ctx context.Context, thread model.Notification, requirements model.EnrichmentRequirements) model.Enrichment {
 	var enrichment model.Enrichment

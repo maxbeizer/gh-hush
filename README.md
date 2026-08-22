@@ -1,8 +1,6 @@
 # gh-hush
 
-`gh-hush` is a read-only, explainable GitHub notification triage extension. It fetches notifications through the authenticated `gh` CLI session, evaluates a user-owned YAML policy in deterministic order, and reports what it would keep or recommend unsubscribing from.
-
-Version 1 does **not** mutate GitHub.
+`gh-hush` is a safe, explainable GitHub notification triage extension. It fetches notifications through the authenticated `gh` CLI session, evaluates a user-owned YAML policy in deterministic order, and previews what it will keep or unsubscribe from before making any changes.
 
 ## Install
 
@@ -19,19 +17,36 @@ make build
 make install-local
 ```
 
-## Dry run
+## Usage
+
+Run without flags to generate a read-only preview and, when running in an interactive terminal, confirm whether to apply the proposed unsubscriptions:
+
+```bash
+gh hush
+```
+
+The confirmation defaults to **No**. The exact decisions shown in the preview are applied; notifications are not fetched and classified a second time.
+
+To preview without prompting or making changes:
 
 ```bash
 gh hush --dry-run
 ```
 
-The report includes every notification's URL, subject type, repository, notification reason, proposed action, and exact matching rules with evidence.
-Progress is written to stderr while subject details are fetched, so large notification inboxes remain visibly active.
+To apply the preview without an interactive prompt, such as from automation, explicitly confirm it:
 
-Dry-run guarantees:
+```bash
+gh hush --confirm
+```
+
+A no-flag invocation remains read-only unless its input, preview output, and prompt output (stderr) are all interactive terminals. Redirected or piped input or output therefore requires `--confirm` to apply changes. `--dry-run` and `--confirm` cannot be combined.
+
+The report includes every notification's URL, subject type, repository, notification reason, proposed action, and exact matching rules with evidence. Progress is written to stderr while subject details are fetched, so large notification inboxes remain visibly active.
+
+Preview guarantees:
 
 - uses the authenticated `gh` session and GitHub Notifications API;
-- makes no GitHub mutations, including no unsubscribe, mute, or mark-as-read calls;
+- makes no GitHub mutations while generating the preview;
 - evaluates keep rules before the catch-all unsubscribe rule;
 - fetches only evidence required by enabled rules and conservatively keeps a thread when that required evidence is unavailable;
 - reports an explicit message when GitHub successfully returns zero notifications;
@@ -82,16 +97,18 @@ output:
 
 Unknown fields, missing policy fields, duplicate teams, malformed logins or team slugs, non-ad-hoc execution, and output settings that would hide decisions or reasons are rejected. The configured user must match the account authenticated by `gh auth`.
 
-Keep flags may be set to `false` to disable that rule. The catch-all unsubscribe rule and complete explainable output are required in v1. Rules run in this order:
+Keep flags may be set to `false` to disable that rule. The catch-all unsubscribe rule and complete explainable output are required. Rules run in this order:
 
 1. Keep issues outside `github_organization`.
 2. Keep personal mentions and personal assignments.
 3. Keep individual review requests; a team review request alone does not match.
 4. Keep work authored by `user`.
 5. Keep Discussions whose subject or latest comment contains an exact configured team mention.
-6. Recommend unsubscribe for everything else.
+6. Propose unsubscribing from everything else.
 
 If subject or comment data required by an enabled rule cannot be fetched and no earlier keep rule already matched, the safety rule keeps the thread instead of guessing. Failures for evidence that no enabled rule needs do not trigger a safety keep. An enabled Discussion team-mention rule with an empty `discussion_team_slugs` list requires no Discussion evidence because no team can match.
+
+Unsubscribing removes the current thread subscription; it does not ignore the thread forever. GitHub may subscribe you again after later activity such as a new mention.
 
 There is no scheduler or recurring mode. Run `gh hush` only when you choose to triage notifications.
 

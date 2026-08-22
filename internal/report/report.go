@@ -8,12 +8,12 @@ import (
 	"github.com/maxbeizer/gh-hush/internal/model"
 )
 
-// Write renders an itemized human-readable dry-run report.
+// Write renders an itemized human-readable preview report.
 func Write(w io.Writer, decisions []model.Decision) error {
-	if _, err := fmt.Fprintln(w, "gh-hush dry run (read-only)"); err != nil {
+	if _, err := fmt.Fprintln(w, "gh-hush preview"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(w, "No GitHub mutations were made: subscriptions, read state, and notification settings are unchanged."); err != nil {
+	if _, err := fmt.Fprintln(w, "No GitHub mutations were made while generating this preview: subscriptions, read state, and notification settings are unchanged."); err != nil {
 		return err
 	}
 	if len(decisions) == 0 {
@@ -63,6 +63,6 @@ func Write(w io.Writer, decisions []model.Decision) error {
 		}
 	}
 
-	_, err := fmt.Fprintf(w, "\nSummary: %d keep, %d recommend unsubscribe, %d total\n", keepCount, unsubscribeCount, len(decisions))
+	_, err := fmt.Fprintf(w, "\nSummary: %d keep, %d propose unsubscribe, %d total\n", keepCount, unsubscribeCount, len(decisions))
 	return err
 }
