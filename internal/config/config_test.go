@@ -29,6 +29,29 @@ func TestDefaultPath(t *testing.T) {
 	})
 }
 
+func TestValidGitHubLogin(t *testing.T) {
+	tests := []struct {
+		name  string
+		login string
+		valid bool
+	}{
+		{name: "one character", login: "a", valid: true},
+		{name: "39 characters", login: strings.Repeat("a", 39), valid: true},
+		{name: "single internal hyphen", login: "octo-cat", valid: true},
+		{name: "leading hyphen", login: "-octocat"},
+		{name: "trailing hyphen", login: "octocat-"},
+		{name: "consecutive hyphens", login: "octo--cat"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := validGitHubLogin(tt.login); got != tt.valid {
+				t.Fatalf("validGitHubLogin(%q) = %t, want %t", tt.login, got, tt.valid)
+			}
+		})
+	}
+}
+
 func TestParseValidation(t *testing.T) {
 	valid := `
 user: octocat
@@ -63,7 +86,10 @@ output:
 		{name: "scheduled mode rejected", config: strings.Replace(valid, "run_mode: ad_hoc", "run_mode: scheduled", 1), wantErr: `run_mode must be "ad_hoc"`},
 		{name: "hidden decisions rejected", config: strings.Replace(valid, "include_keep_decisions: true", "include_keep_decisions: false", 1), wantErr: "output.include_keep_decisions must be true"},
 		{name: "catch all required", config: strings.Replace(valid, "all_other_notifications: true", "all_other_notifications: false", 1), wantErr: "unsubscribe.all_other_notifications must be true"},
+		{name: "invalid user login", config: strings.Replace(valid, "user: octocat", "user: octo--cat", 1), wantErr: "user must be a valid GitHub login"},
+		{name: "invalid organization login", config: strings.Replace(valid, "github_organization: github", "github_organization: github-", 1), wantErr: "github_organization must be a valid GitHub organization login"},
 		{name: "invalid team syntax", config: strings.Replace(valid, "github/notifications", `"@github/notifications"`, 1), wantErr: "must use org/team-slug form"},
+		{name: "invalid team organization login", config: strings.Replace(valid, "github/notifications", "git--hub/notifications", 1), wantErr: "must use org/team-slug form"},
 		{name: "team must match organization", config: strings.Replace(valid, "github/notifications", "other/notifications", 1), wantErr: "must belong to github_organization"},
 		{name: "duplicate teams rejected", config: strings.Replace(valid, "  - github/notifications\n", "  - github/notifications\n  - GITHUB/notifications\n", 1), wantErr: "contains duplicate"},
 		{name: "multiple documents rejected", config: valid + "---\nuser: another\n", wantErr: "exactly one YAML document"},
