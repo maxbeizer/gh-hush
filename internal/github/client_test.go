@@ -42,6 +42,35 @@ func TestListNotificationsInvokesGHAndFlattensPages(t *testing.T) {
 	}
 }
 
+func TestUnsubscribeNotificationInvokesGitHubDelete(t *testing.T) {
+	var gotArgs []string
+	client := &CLIClient{commandRunner: func(_ context.Context, args ...string) ([]byte, error) {
+		gotArgs = append([]string(nil), args...)
+		return nil, nil
+	}}
+
+	if err := client.UnsubscribeNotification(context.Background(), "12345"); err != nil {
+		t.Fatalf("UnsubscribeNotification() error = %v", err)
+	}
+	wantArgs := []string{
+		"api", "--method", "DELETE", "-H",
+		"Accept: application/vnd.github+json", "/notifications/threads/12345/subscription",
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Fatalf("UnsubscribeNotification() gh args = %#v, want %#v", gotArgs, wantArgs)
+	}
+}
+
+func TestUnsubscribeNotificationRejectsEmptyID(t *testing.T) {
+	client := &CLIClient{commandRunner: func(context.Context, ...string) ([]byte, error) {
+		t.Fatal("command runner called for empty thread ID")
+		return nil, nil
+	}}
+	if err := client.UnsubscribeNotification(context.Background(), " "); err == nil {
+		t.Fatal("UnsubscribeNotification() error = nil, want empty ID error")
+	}
+}
+
 func TestListNotificationsEmptyResponse(t *testing.T) {
 	client := &CLIClient{commandRunner: func(context.Context, ...string) ([]byte, error) {
 		return []byte(`[]`), nil

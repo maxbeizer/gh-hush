@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -15,12 +16,14 @@ import (
 	"github.com/maxbeizer/gh-hush/internal/policy"
 	"github.com/maxbeizer/gh-hush/internal/report"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // NewRootCommand constructs the gh-hush command.
 func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	var configPath string
 	var dryRun bool
+	var confirm bool
 
 	rootCmd := &cobra.Command{
 		Use:           "gh-hush",
@@ -30,8 +33,8 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 		Args:          cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			configProvided := cmd.Flags().Changed("config")
-			if !dryRun {
-				return errors.New("no operation selected; use --dry-run (GitHub mutations are not implemented)")
+			if dryRun && confirm {
+				return errors.New("--dry-run and --confirm cannot be used together")
 			}
 			if !configProvided {
 				var err error
@@ -48,19 +51,20 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 				}
 				return err
 			}
-			return runDryRun(cmd, stdout, stderr, cfg)
+			return run(cmd, stdout, stderr, cfg, dryRun, confirm)
 		},
 	}
 	rootCmd.SetOut(stdout)
 	rootCmd.SetErr(stderr)
 
 	rootCmd.Flags().StringVar(&configPath, "config", "", "override the default user-owned YAML policy path")
-	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "classify notifications without mutating GitHub")
+	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "classify notifications without prompting or mutating GitHub")
+	rootCmd.Flags().BoolVar(&confirm, "confirm", false, "apply proposed unsubscriptions without prompting")
 
 	return rootCmd
 }
 
-func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, cfg config.Config) error {
+func run(ctxCommand *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dryRun, confirm bool) error {
 	client, err := ghclient.NewCLIClient(ctxCommand.Context())
 	if err != nil {
 		return fmt.Errorf("initialize authenticated GitHub client: %w", err)
@@ -84,11 +88,87 @@ func runDryRun(ctxCommand *cobra.Command, stdout, stderr io.Writer, cfg config.C
 		return fmt.Errorf("write dry-run report: %w", err)
 	}
 
-	return nil
+	unsubscribeCount := countUnsubscriptions(decisions)
+	if dryRun || unsubscribeCount == 0 {
+		return nil
+	}
+	if !confirm {
+		if !isTerminal(ctxCommand.InOrStdin()) {
+			_, _ = fmt.Fprintln(stderr, "Dry run only: input is not an interactive terminal. Re-run with --confirm to apply these changes.")
+			return nil
+		}
+		approved, err := promptForConfirmation(ctxCommand.InOrStdin(), stderr, unsubscribeCount)
+		if err != nil {
+			return fmt.Errorf("read confirmation: %w", err)
+		}
+		if !approved {
+			_, _ = fmt.Fprintln(stderr, "No changes made.")
+			return nil
+		}
+	}
+
+	return applyUnsubscriptions(ctxCommand.Context(), stderr, client, decisions)
 }
 
 type notificationEnricher interface {
 	Enrich(context.Context, model.Notification, model.EnrichmentRequirements) model.Enrichment
+}
+
+type notificationUnsubscriber interface {
+	UnsubscribeNotification(context.Context, string) error
+}
+
+func countUnsubscriptions(decisions []model.Decision) int {
+	count := 0
+	for _, decision := range decisions {
+		if decision.Action == model.ActionUnsubscribe {
+			count++
+		}
+	}
+	return count
+}
+
+func promptForConfirmation(input io.Reader, output io.Writer, count int) (bool, error) {
+	if _, err := fmt.Fprintf(output, "Unsubscribe from %d notifications? [y/N] ", count); err != nil {
+		return false, err
+	}
+	answer, err := bufio.NewReader(input).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	return answer == "y" || answer == "yes", nil
+}
+
+func isTerminal(input io.Reader) bool {
+	file, ok := input.(*os.File)
+	if !ok {
+		return false
+	}
+	return term.IsTerminal(int(file.Fd()))
+}
+
+func applyUnsubscriptions(ctx context.Context, stderr io.Writer, client notificationUnsubscriber, decisions []model.Decision) error {
+	total := countUnsubscriptions(decisions)
+	_, _ = fmt.Fprintf(stderr, "applying %d unsubscriptions...\n", total)
+
+	applied := 0
+	var failures []error
+	for _, decision := range decisions {
+		if decision.Action != model.ActionUnsubscribe {
+			continue
+		}
+		if err := client.UnsubscribeNotification(ctx, decision.Thread.ID); err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", decision.URL, err))
+			continue
+		}
+		applied++
+	}
+	_, _ = fmt.Fprintf(stderr, "applied %d/%d unsubscriptions\n", applied, total)
+	if len(failures) > 0 {
+		return fmt.Errorf("failed to apply %d unsubscriptions: %w", len(failures), errors.Join(failures...))
+	}
+	return nil
 }
 
 func classifyNotifications(

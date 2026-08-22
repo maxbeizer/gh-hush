@@ -13,13 +13,29 @@ import (
 	"github.com/maxbeizer/gh-hush/internal/model"
 )
 
-func TestNoImplicitOperation(t *testing.T) {
-	command := NewRootCommand(io.Discard, io.Discard)
+func TestDefaultOperationIsDryRun(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var stdout strings.Builder
+	command := NewRootCommand(&stdout, io.Discard)
 	command.SetArgs(nil)
 
+	if err := command.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v, want default dry-run help without an error", err)
+	}
+	for _, expected := range []string{"Usage:", "--dry-run", "--confirm"} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Errorf("help output missing %q", expected)
+		}
+	}
+}
+
+func TestDryRunAndConfirmAreMutuallyExclusive(t *testing.T) {
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"--dry-run", "--confirm"})
+
 	err := command.Execute()
-	if err == nil || !strings.Contains(err.Error(), "no operation selected") {
-		t.Fatalf("Execute() error = %v, want explicit operation error", err)
+	if err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+		t.Fatalf("Execute() error = %v, want mutually exclusive flags error", err)
 	}
 }
 
@@ -67,6 +83,65 @@ func TestMissingExplicitConfigReturnsError(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want no help output", stdout.String())
 	}
+}
+
+func TestPromptForConfirmationDefaultsToNo(t *testing.T) {
+	tests := []struct {
+		answer string
+		want   bool
+	}{
+		{answer: "y\n", want: true},
+		{answer: "YES\n", want: true},
+		{answer: "\n", want: false},
+		{answer: "no\n", want: false},
+	}
+	for _, test := range tests {
+		var output strings.Builder
+		got, err := promptForConfirmation(strings.NewReader(test.answer), &output, 3)
+		if err != nil {
+			t.Fatalf("promptForConfirmation(%q) error = %v", test.answer, err)
+		}
+		if got != test.want {
+			t.Errorf("promptForConfirmation(%q) = %v, want %v", test.answer, got, test.want)
+		}
+		if !strings.Contains(output.String(), "Unsubscribe from 3 notifications? [y/N]") {
+			t.Errorf("prompt output = %q", output.String())
+		}
+	}
+}
+
+func TestApplyUnsubscriptionsAppliesOnlyDisplayedUnsubscribeDecisions(t *testing.T) {
+	client := &recordingUnsubscriber{failID: "third"}
+	decisions := []model.Decision{
+		{Thread: model.Notification{ID: "first"}, Action: model.ActionUnsubscribe, URL: "first-url"},
+		{Thread: model.Notification{ID: "second"}, Action: model.ActionKeep, URL: "second-url"},
+		{Thread: model.Notification{ID: "third"}, Action: model.ActionUnsubscribe, URL: "third-url"},
+	}
+	var progress strings.Builder
+
+	err := applyUnsubscriptions(context.Background(), &progress, client, decisions)
+	if err == nil || !strings.Contains(err.Error(), "third-url") {
+		t.Fatalf("applyUnsubscriptions() error = %v, want third failure", err)
+	}
+	if got := strings.Join(client.ids, ","); got != "first,third" {
+		t.Fatalf("unsubscribe IDs = %q, want first,third", got)
+	}
+	if !strings.Contains(progress.String(), "applied 1/2") {
+		t.Fatalf("progress = %q, want partial result", progress.String())
+	}
+}
+
+type recordingUnsubscriber struct {
+	ids    []string
+	failID string
+}
+
+func (u *recordingUnsubscriber) UnsubscribeNotification(_ context.Context, id string) error {
+	u.ids = append(u.ids, id)
+	if id == u.failID {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 func TestClassifyNotificationsReportsProgressAndPreservesOrder(t *testing.T) {
