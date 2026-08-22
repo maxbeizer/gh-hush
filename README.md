@@ -64,7 +64,7 @@ $XDG_CONFIG_HOME/gh-hush/config.yml
 When `XDG_CONFIG_HOME` is unset, it reads `~/.config/gh-hush/config.yml`. Override that location explicitly when needed:
 
 ```bash
-gh hush --config /path/to/another-policy.yml --dry-run
+gh hush --config /path/to/another-policy.yml
 ```
 
 The configuration schema is:

@@ -19,8 +19,14 @@ import (
 	"golang.org/x/term"
 )
 
+type runFunc func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool) error
+
 // NewRootCommand constructs the gh-hush command.
 func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
+	return newRootCommand(stdout, stderr, run)
+}
+
+func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Command {
 	var configPath string
 	var dryRun bool
 	var confirm bool
@@ -48,7 +54,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 				}
 				return err
 			}
-			return run(cmd, stdout, stderr, cfg, dryRun, confirm)
+			return runOperation(cmd, stdout, stderr, cfg, dryRun, confirm)
 		},
 	}
 	rootCmd.SetOut(stdout)

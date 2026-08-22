@@ -13,6 +13,7 @@ import (
 
 	"github.com/maxbeizer/gh-hush/internal/config"
 	"github.com/maxbeizer/gh-hush/internal/model"
+	"github.com/spf13/cobra"
 )
 
 func TestDefaultOperationShowsHelpWhenConfigMissing(t *testing.T) {
@@ -31,6 +32,38 @@ func TestDefaultOperationShowsHelpWhenConfigMissing(t *testing.T) {
 	}
 }
 
+func TestNoArgsRunsDefaultOperation(t *testing.T) {
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configDir := filepath.Join(configHome, "gh-hush")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.yml"), []byte(validConfigYAML), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	called := false
+	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, cfg config.Config, dryRun, confirm bool) error {
+		called = true
+		if cfg.User != "octocat" {
+			t.Errorf("config user = %q, want octocat", cfg.User)
+		}
+		if dryRun || confirm {
+			t.Errorf("default operation flags = dry-run %v, confirm %v; want both false", dryRun, confirm)
+		}
+		return nil
+	})
+	command.SetArgs(nil)
+
+	if err := command.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v, want default operation", err)
+	}
+	if !called {
+		t.Fatal("default operation was not invoked")
+	}
+}
+
 func TestDryRunAndConfirmAreMutuallyExclusive(t *testing.T) {
 	command := NewRootCommand(io.Discard, io.Discard)
 	command.SetArgs([]string{"--dry-run", "--confirm"})
@@ -40,6 +73,28 @@ func TestDryRunAndConfirmAreMutuallyExclusive(t *testing.T) {
 		t.Fatalf("Execute() error = %v, want mutually exclusive flags error", err)
 	}
 }
+
+const validConfigYAML = `
+user: octocat
+github_organization: github
+run_mode: ad_hoc
+discussion_team_slugs:
+  - github/notifications
+keep:
+  external_organization_issues: true
+  personally_mentioned: true
+  personally_assigned: true
+  individually_review_requested: true
+  authored_by_user: true
+  team_mentioned_discussions: true
+unsubscribe:
+  all_other_notifications: true
+output:
+  default_mode: dry_run
+  include_keep_decisions: true
+  include_unsubscribe_decisions: true
+  include_decision_reasons: true
+`
 
 func TestConfigFlagIsAnOptionalOverride(t *testing.T) {
 	command := NewRootCommand(io.Discard, io.Discard)
