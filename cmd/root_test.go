@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -82,6 +83,26 @@ func TestMissingExplicitConfigReturnsError(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want no help output", stdout.String())
+	}
+}
+
+func TestIsTerminalRejectsRedirectedStreams(t *testing.T) {
+	redirectedFile, err := os.CreateTemp(t.TempDir(), "preview")
+	if err != nil {
+		t.Fatalf("CreateTemp() error = %v", err)
+	}
+	defer redirectedFile.Close()
+
+	for name, stream := range map[string]any{
+		"in-memory input":  strings.NewReader("y\n"),
+		"in-memory output": &strings.Builder{},
+		"redirected file":  redirectedFile,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if isTerminal(stream) {
+				t.Fatalf("isTerminal(%s) = true, want false", name)
+			}
+		})
 	}
 }
 

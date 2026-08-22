@@ -39,7 +39,7 @@ To apply the preview without an interactive prompt, such as from automation, exp
 gh hush --confirm
 ```
 
-A no-flag invocation with non-interactive input remains read-only and tells you to re-run with `--confirm`. `--dry-run` and `--confirm` cannot be combined.
+A no-flag invocation remains read-only unless both its input and preview output are interactive terminals. Redirected or piped previews therefore require `--confirm` to apply changes. `--dry-run` and `--confirm` cannot be combined.
 
 The report includes every notification's URL, subject type, repository, notification reason, proposed action, and exact matching rules with evidence. Progress is written to stderr while subject details are fetched, so large notification inboxes remain visibly active.
 

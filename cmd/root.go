@@ -93,8 +93,8 @@ func run(ctxCommand *cobra.Command, stdout, stderr io.Writer, cfg config.Config,
 		return nil
 	}
 	if !confirm {
-		if !isTerminal(ctxCommand.InOrStdin()) {
-			_, _ = fmt.Fprintln(stderr, "Dry run only: input is not an interactive terminal. Re-run with --confirm to apply these changes.")
+		if !isTerminal(ctxCommand.InOrStdin()) || !isTerminal(ctxCommand.OutOrStdout()) {
+			_, _ = fmt.Fprintln(stderr, "Dry run only: input and preview output must both be interactive terminals. Re-run with --confirm to apply these changes.")
 			return nil
 		}
 		approved, err := promptForConfirmation(ctxCommand.InOrStdin(), stderr, unsubscribeCount)
@@ -140,8 +140,8 @@ func promptForConfirmation(input io.Reader, output io.Writer, count int) (bool, 
 	return answer == "y" || answer == "yes", nil
 }
 
-func isTerminal(input io.Reader) bool {
-	file, ok := input.(*os.File)
+func isTerminal(stream any) bool {
+	file, ok := stream.(*os.File)
 	if !ok {
 		return false
 	}
