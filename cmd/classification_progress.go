@@ -119,23 +119,6 @@ func (p *classificationProgress) start(total int)      { p.phase.start(total) }
 func (p *classificationProgress) update(completed int) { p.phase.update(completed) }
 func (p *classificationProgress) finish()              { p.phase.finish(p.phase.total, false) }
 
-func newApplicationProgress(output io.Writer, interactive bool) *phaseProgress {
-	return newPhaseProgress(
-		output,
-		interactive,
-		"No notification updates to apply.",
-		func(completed, total int) string {
-			return fmt.Sprintf("Applying %s (unsubscribe, mark Done, and revalidate)… %d/%d (%d%%)", notificationUpdateWord(total), completed, total, percentage(completed, total))
-		},
-		func(completed, total int, stopped bool) string {
-			if !stopped && completed == total {
-				return fmt.Sprintf("✓ Finished applying %d/%d %s (100%%)", completed, total, notificationUpdateWord(total))
-			}
-			return fmt.Sprintf("Stopped applying after %d/%d %s (%d%%)", completed, total, notificationUpdateWord(total), percentage(completed, total))
-		},
-	)
-}
-
 func percentage(completed, total int) int {
 	return completed * 100 / total
 }
@@ -145,11 +128,4 @@ func notificationWord(count int) string {
 		return "notification"
 	}
 	return "notifications"
-}
-
-func notificationUpdateWord(count int) string {
-	if count == 1 {
-		return "notification update"
-	}
-	return "notification updates"
 }
