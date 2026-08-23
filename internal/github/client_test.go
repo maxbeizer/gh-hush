@@ -9,14 +9,13 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/maxbeizer/gh-hush/internal/github/transport"
 	"github.com/maxbeizer/gh-hush/internal/model"
 )
 
 func testClient(server *httptest.Server) *CLIClient {
-	return &CLIClient{transport: transport.New(transport.Config{HTTPClient: server.Client(), BaseURL: server.URL, Token: "test", Sleep: func(context.Context, time.Duration) error { return nil }})}
+	return &CLIClient{transport: transport.New(transport.Config{HTTPClient: server.Client(), BaseURL: server.URL, Token: "test"})}
 }
 
 func TestNewCLIClientPinsTokenLookupToGitHubDotComAPIHost(t *testing.T) {
@@ -61,6 +60,24 @@ func TestListNotificationsUsesUnreadOnlyDefaultAndPaginates(t *testing.T) {
 	for _, query := range queries {
 		if strings.Contains(query, "all=") || !strings.Contains(query, "per_page=100") {
 			t.Fatalf("query=%q", query)
+		}
+	}
+}
+
+func TestDecodeErrorsUseSanitizedEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`decode-body-secret`))
+	}))
+	defer server.Close()
+	client := testClient(server)
+	var target model.User
+	err := client.get(context.Background(), "/user?access_token=decode-secret#fragment-secret", &target)
+	if err == nil || !strings.Contains(err.Error(), `"/user"`) {
+		t.Fatalf("err=%v", err)
+	}
+	for _, forbidden := range []string{"decode-secret", "fragment-secret", "decode-body-secret", "access_token", server.URL} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Errorf("decode error exposed %q: %v", forbidden, err)
 		}
 	}
 }

@@ -159,7 +159,7 @@ func (c *CLIClient) get(ctx context.Context, endpoint string, target any) error 
 		return err
 	}
 	if err := json.Unmarshal(response.Body, target); err != nil {
-		return fmt.Errorf("decode GitHub API response for %q: %w", response.EffectiveURL, err)
+		return fmt.Errorf("decode GitHub API response for %q: %w", response.Endpoint, err)
 	}
 	return nil
 }
@@ -170,13 +170,13 @@ func getPages(t apiTransport, ctx context.Context, endpoint string, target any) 
 		case *[]model.Notification:
 			var page []model.Notification
 			if err := json.Unmarshal(response.Body, &page); err != nil {
-				return fmt.Errorf("decode paginated GitHub API response for %q: %w", response.EffectiveURL, err)
+				return fmt.Errorf("decode paginated GitHub API response for %q: %w", response.Endpoint, err)
 			}
 			*out = append(*out, page...)
 		case *[]model.Resource:
 			var page []model.Resource
 			if err := json.Unmarshal(response.Body, &page); err != nil {
-				return fmt.Errorf("decode paginated GitHub API response for %q: %w", response.EffectiveURL, err)
+				return fmt.Errorf("decode paginated GitHub API response for %q: %w", response.Endpoint, err)
 			}
 			*out = append(*out, page...)
 		default:

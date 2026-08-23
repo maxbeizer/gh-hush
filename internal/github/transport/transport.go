@@ -33,8 +33,6 @@ type Config struct {
 	HTTPClient *http.Client
 	Token      string
 	BaseURL    string
-	// Sleep is intended for deterministic transport-interface tests.
-	Sleep func(context.Context, time.Duration) error
 }
 
 // Client owns authenticated request construction, origin confinement,
@@ -47,13 +45,19 @@ type Client struct {
 }
 
 func New(config Config) *Client {
-	return &Client{httpClient: config.HTTPClient, token: config.Token, baseURL: config.BaseURL, sleep: config.Sleep}
+	return &Client{httpClient: config.HTTPClient, token: config.Token, baseURL: config.BaseURL}
 }
 
 // Response is the bounded successful representation exposed to the adapter.
+// Endpoint contains only the escaped path, never URL credentials or a query.
 type Response struct {
-	Body         []byte
-	EffectiveURL string
+	Body     []byte
+	Endpoint string
+}
+
+type requestResult struct {
+	Response
+	effectiveURL string
 	header       http.Header
 }
 
@@ -69,23 +73,40 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("GitHub API request for %q returned %s (request ID %q)", e.endpoint, e.statusText, e.requestID)
 }
 
+type safeError struct {
+	message string
+	cause   error
+}
+
+func (e *safeError) Error() string { return e.message }
+func (e *safeError) Unwrap() error { return e.cause }
+
+func hideError(message string, cause error) error {
+	return &safeError{message: message, cause: cause}
+}
+
 // Request performs one logical authenticated API operation. Transient attempts
 // and redirects remain internal to the transport.
 func (c *Client) Request(ctx context.Context, method, endpoint string) (Response, error) {
+	result, err := c.request(ctx, method, endpoint)
+	return result.Response, err
+}
+
+func (c *Client) request(ctx context.Context, method, endpoint string) (requestResult, error) {
 	requestURL, err := c.resolve(endpoint)
 	if err != nil {
-		return Response{}, err
+		return requestResult{}, err
 	}
 	safeEndpoint := sanitizedEndpoint(requestURL)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			diagnostic.Log(ctx, "request_cancelled", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt))
-			return Response{}, err
+			return requestResult{}, err
 		}
 		diagnostic.Log(ctx, "request_start", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt))
 		request, err := http.NewRequestWithContext(ctx, method, requestURL, nil)
 		if err != nil {
-			return Response{}, fmt.Errorf("create GitHub API request: %w", err)
+			return requestResult{}, hideError("create GitHub API request", err)
 		}
 		request.Header.Set("Accept", "application/vnd.github+json")
 		request.Header.Set("Authorization", "Bearer "+c.token)
@@ -95,65 +116,79 @@ func (c *Client) Request(ctx context.Context, method, endpoint string) (Response
 		if requestErr != nil {
 			if ctx.Err() != nil {
 				diagnostic.Log(ctx, "request_cancelled", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt))
-				return Response{}, ctx.Err()
+				return requestResult{}, ctx.Err()
 			}
 			retryable := retryableNetworkError(requestErr)
 			diagnostic.Log(ctx, "request_failed", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt), diagnostic.String("kind", "network"), diagnostic.Bool("retryable", retryable))
 			if !retryable {
-				return Response{}, fmt.Errorf("request GitHub API endpoint %q: %w", requestURL, requestErr)
+				message := fmt.Sprintf("request GitHub API endpoint %q failed", safeEndpoint)
+				var redirectErr *redirectPolicyError
+				if errors.As(requestErr, &redirectErr) {
+					message += ": " + redirectErr.Error()
+				}
+				return requestResult{}, hideError(message, requestErr)
 			}
 			if attempt == maxAttempts {
-				return Response{}, fmt.Errorf("request GitHub API endpoint %q exhausted %d attempts: %w", requestURL, maxAttempts, requestErr)
+				return requestResult{}, hideError(fmt.Sprintf("request GitHub API endpoint %q exhausted %d attempts", safeEndpoint, maxAttempts), requestErr)
 			}
 			delay := backoff(attempt)
 			diagnostic.Log(ctx, "retry_scheduled", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt), diagnostic.Int("delay_ms", int(delay/time.Millisecond)))
 			if err := c.wait(ctx, delay); err != nil {
 				diagnostic.Log(ctx, "request_cancelled", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt))
-				return Response{}, err
+				return requestResult{}, err
 			}
 			continue
 		}
 		effectiveURL := requestURL
 		if response.Request != nil && response.Request.URL != nil {
-			effectiveURL = response.Request.URL.Redacted()
+			effectiveURL = response.Request.URL.String()
 		}
-		diagnostic.Log(ctx, "response", responseFields(method, sanitizedEndpoint(effectiveURL), attempt, response)...)
+		effectiveEndpoint := sanitizedEndpoint(effectiveURL)
+		diagnostic.Log(ctx, "response", responseFields(method, effectiveEndpoint, attempt, response)...)
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 		_ = response.Body.Close()
 		if readErr != nil {
 			if ctx.Err() != nil {
-				return Response{}, ctx.Err()
+				return requestResult{}, ctx.Err()
 			}
 			if !retryableNetworkError(readErr) {
-				return Response{}, fmt.Errorf("read GitHub API response for %q: %w", effectiveURL, readErr)
+				return requestResult{}, hideError(fmt.Sprintf("read GitHub API response for %q failed", effectiveEndpoint), readErr)
 			}
 			if attempt == maxAttempts {
-				return Response{}, fmt.Errorf("read GitHub API response for %q exhausted %d attempts: %w", effectiveURL, maxAttempts, readErr)
+				return requestResult{}, hideError(fmt.Sprintf("read GitHub API response for %q exhausted %d attempts", effectiveEndpoint, maxAttempts), readErr)
 			}
 			if err := c.wait(ctx, backoff(attempt)); err != nil {
-				return Response{}, err
+				return requestResult{}, err
 			}
 			continue
 		}
 		if len(body) > maxResponseBytes {
-			return Response{}, fmt.Errorf("GitHub API response for %q exceeded %d bytes", effectiveURL, maxResponseBytes)
+			return requestResult{}, fmt.Errorf("GitHub API response for %q exceeded %d bytes", effectiveEndpoint, maxResponseBytes)
 		}
-		result := Response{Body: body, EffectiveURL: effectiveURL, header: response.Header}
+		result := requestResult{
+			Response:     Response{Body: body, Endpoint: effectiveEndpoint},
+			effectiveURL: effectiveURL,
+			header:       response.Header,
+		}
 		if response.StatusCode >= 200 && response.StatusCode < 300 {
 			return result, nil
 		}
-		apiErr := &APIError{StatusCode: response.StatusCode, statusText: response.Status, requestID: response.Header.Get("X-GitHub-Request-Id"), endpoint: effectiveURL}
+		statusText := strconv.Itoa(response.StatusCode)
+		if text := http.StatusText(response.StatusCode); text != "" {
+			statusText += " " + text
+		}
+		apiErr := &APIError{StatusCode: response.StatusCode, statusText: statusText, requestID: response.Header.Get("X-GitHub-Request-Id"), endpoint: effectiveEndpoint}
 		if !retryableStatus(response.StatusCode) {
-			return Response{}, apiErr
+			return requestResult{}, apiErr
 		}
 		if attempt == maxAttempts {
-			return Response{}, fmt.Errorf("GitHub API request exhausted %d attempts: %w", maxAttempts, apiErr)
+			return requestResult{}, fmt.Errorf("GitHub API request exhausted %d attempts: %w", maxAttempts, apiErr)
 		}
 		delay := retryDelay(response.Header, attempt)
 		diagnostic.Log(ctx, "retry_scheduled", diagnostic.String("method", method), diagnostic.String("endpoint", sanitizedEndpoint(effectiveURL)), diagnostic.Int("attempt", attempt), diagnostic.Int("delay_ms", int(delay/time.Millisecond)))
 		if err := c.wait(ctx, delay); err != nil {
 			diagnostic.Log(ctx, "request_cancelled", diagnostic.String("method", method), diagnostic.String("endpoint", sanitizedEndpoint(effectiveURL)), diagnostic.Int("attempt", attempt))
-			return Response{}, err
+			return requestResult{}, err
 		}
 	}
 	panic("unreachable")
@@ -164,16 +199,16 @@ func (c *Client) Request(ctx context.Context, method, endpoint string) (Response
 func (c *Client) Pages(ctx context.Context, endpoint string, visit func(Response) error) error {
 	next := endpoint
 	for next != "" {
-		response, err := c.Request(ctx, http.MethodGet, next)
+		result, err := c.request(ctx, http.MethodGet, next)
 		if err != nil {
 			return err
 		}
-		if err := visit(response); err != nil {
+		if err := visit(result.Response); err != nil {
 			return err
 		}
-		next = nextLink(response.header.Get("Link"))
+		next = nextLink(result.header.Get("Link"))
 		if next != "" {
-			next, err = c.resolvePageLink(response.EffectiveURL, next)
+			next, err = c.resolvePageLink(result.effectiveURL, next)
 			if err != nil {
 				return err
 			}
@@ -206,21 +241,21 @@ func (c *Client) resolve(endpoint string) (string, error) {
 	}
 	baseURL, err := url.Parse(strings.TrimRight(base, "/") + "/")
 	if err != nil {
-		return "", fmt.Errorf("parse GitHub API base URL %q: %w", base, err)
+		return "", hideError("parse GitHub API base URL", err)
 	}
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
-		return "", fmt.Errorf("parse GitHub API endpoint %q: %w", endpoint, err)
+		return "", hideError("parse GitHub API endpoint", err)
 	}
 	resolved := baseURL.ResolveReference(parsed)
 	if baseURL.Opaque != "" || baseURL.User != nil {
-		return "", fmt.Errorf("refuse malformed GitHub API base URL %q", baseURL.Redacted())
+		return "", errors.New("refuse malformed GitHub API base URL")
 	}
 	if resolved.Opaque != "" || resolved.User != nil {
-		return "", fmt.Errorf("refuse GitHub API endpoint with opaque URL or userinfo %q", resolved.Redacted())
+		return "", fmt.Errorf("refuse GitHub API endpoint with opaque URL or userinfo for %q", sanitizedEndpoint(resolved.String()))
 	}
 	if !sameOrigin(baseURL, resolved) {
-		return "", fmt.Errorf("refuse GitHub API endpoint on unexpected origin %q", resolved.Redacted())
+		return "", fmt.Errorf("refuse GitHub API endpoint on unexpected origin for %q", sanitizedEndpoint(resolved.String()))
 	}
 	return resolved.String(), nil
 }
@@ -228,11 +263,11 @@ func (c *Client) resolve(endpoint string) (string, error) {
 func (c *Client) resolvePageLink(currentURL, link string) (string, error) {
 	current, err := url.Parse(currentURL)
 	if err != nil {
-		return "", fmt.Errorf("parse current GitHub API page URL %q: %w", currentURL, err)
+		return "", hideError("parse current GitHub API page URL", err)
 	}
 	reference, err := url.Parse(link)
 	if err != nil {
-		return "", fmt.Errorf("parse GitHub API pagination link %q: %w", link, err)
+		return "", hideError("parse GitHub API pagination link", err)
 	}
 	return c.resolve(current.ResolveReference(reference).String())
 }
@@ -323,7 +358,7 @@ func (c *Client) do(request *http.Request) (*http.Response, error) {
 				return &redirectPolicyError{err: err}
 			}
 			if next.Host != "" && !sameAuthority(next.Host, next.URL.Host, next.URL.Scheme) {
-				return &redirectPolicyError{err: fmt.Errorf("refuse GitHub API redirect with unexpected Host override %q", next.Host)}
+				return &redirectPolicyError{err: errors.New("refuse GitHub API redirect with unexpected Host override")}
 			}
 			if next.Method != expectedMethod {
 				return &redirectPolicyError{err: fmt.Errorf("refuse GitHub API redirect that changes method from %s to %s", expectedMethod, next.Method)}
@@ -346,7 +381,7 @@ func (c *Client) do(request *http.Request) (*http.Response, error) {
 				if err == http.ErrUseLastResponse {
 					return err
 				}
-				return &redirectPolicyError{err: err}
+				return &redirectPolicyError{err: hideError("custom GitHub API redirect policy rejected redirect", err)}
 			}
 			return validate()
 		}

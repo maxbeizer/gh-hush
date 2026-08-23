@@ -17,7 +17,9 @@ import (
 )
 
 func testTransport(server *httptest.Server) *Client {
-	return New(Config{HTTPClient: server.Client(), BaseURL: server.URL, Token: "test", Sleep: func(context.Context, time.Duration) error { return nil }})
+	client := New(Config{HTTPClient: server.Client(), BaseURL: server.URL, Token: "test"})
+	client.sleep = func(context.Context, time.Duration) error { return nil }
+	return client
 }
 
 func TestRequestAppliesAuthenticationAndSafeDiagnosticsAcrossRetry(t *testing.T) {
@@ -70,6 +72,71 @@ func TestRequestAppliesAuthenticationAndSafeDiagnosticsAcrossRetry(t *testing.T)
 	}
 }
 
+func TestRequestHidesUnsafeNetworkAndReadErrors(t *testing.T) {
+	const secret = "network-secret"
+	sentinel := errors.New("failed at https://user:password@api.github.test/path?token=" + secret)
+	for _, test := range []struct {
+		name      string
+		transport roundTripFunc
+	}{
+		{
+			name: "network",
+			transport: func(*http.Request) (*http.Response, error) {
+				return nil, sentinel
+			},
+		},
+		{
+			name: "response read",
+			transport: func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: &errorBody{err: sentinel}}, nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output strings.Builder
+			ctx := diagnostic.WithLogger(context.Background(), diagnostic.New(&output))
+			client := New(Config{BaseURL: "https://api.github.test", Token: secret, HTTPClient: &http.Client{Transport: test.transport}})
+			_, err := client.Request(ctx, http.MethodGet, "/items?access_token="+secret)
+			if err == nil || !errors.Is(err, sentinel) {
+				t.Fatalf("err=%v", err)
+			}
+			for label, text := range map[string]string{"error": err.Error(), "diagnostics": output.String()} {
+				for _, forbidden := range []string{secret, "access_token", "user:password", "token="} {
+					if strings.Contains(text, forbidden) {
+						t.Errorf("%s exposed %q: %s", label, forbidden, text)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestResolutionErrorsHideInputCredentials(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		baseURL  string
+		endpoint string
+	}{
+		{name: "invalid base", baseURL: "https://base-secret%zz.example", endpoint: "/items"},
+		{name: "invalid endpoint", baseURL: "https://api.github.test", endpoint: "https://endpoint-secret%zz.example/items?token=hidden"},
+		{name: "endpoint userinfo", baseURL: "https://api.github.test", endpoint: "https://user:password@api.github.test/items?token=hidden"},
+		{name: "foreign origin", baseURL: "https://api.github.test", endpoint: "https://credential.example/items?token=hidden"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := New(Config{BaseURL: test.baseURL})
+			_, err := client.Request(context.Background(), http.MethodGet, test.endpoint)
+			if err == nil {
+				t.Fatal("error=nil")
+			}
+			for _, forbidden := range []string{"base-secret", "endpoint-secret", "user:password", "credential.example", "token=hidden"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Errorf("error exposed %q: %v", forbidden, err)
+				}
+			}
+		})
+	}
+}
+
 func TestRequestCancellationDoesNotStartRequest(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests++ }))
@@ -110,6 +177,51 @@ func TestPagesResolvesLinksAgainstFinalRedirectAndRejectsForeignOrigin(t *testin
 		}
 		if !reflect.DeepEqual(pages, []string{"first", "second"}) || !reflect.DeepEqual(uris, []string{"/notifications?per_page=100", "/redirected/pages/first", "/redirected/pages/next?page=2"}) {
 			t.Fatalf("pages=%v uris=%v", pages, uris)
+		}
+	})
+
+	t.Run("query-only link uses full final URL", func(t *testing.T) {
+		var uris []string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			uris = append(uris, r.URL.RequestURI())
+			switch {
+			case r.URL.Path == "/start":
+				http.Redirect(w, r, "/final/items?cursor=private", http.StatusTemporaryRedirect)
+			case r.URL.Query().Get("page") == "2":
+				_, _ = w.Write([]byte("second"))
+			default:
+				w.Header().Set("Link", `<?page=2>; rel="next"`)
+				_, _ = w.Write([]byte("first"))
+			}
+		}))
+		defer server.Close()
+		var endpoints []string
+		err := testTransport(server).Pages(context.Background(), "/start?token=initial", func(response Response) error {
+			endpoints = append(endpoints, response.Endpoint)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(uris, []string{"/start?token=initial", "/final/items?cursor=private", "/final/items?page=2"}) || !reflect.DeepEqual(endpoints, []string{"/final/items", "/final/items"}) {
+			t.Fatalf("uris=%v endpoints=%v", uris, endpoints)
+		}
+	})
+
+	t.Run("malformed next link hides credentials", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Link", `<https://link-secret%zz.example/page?token=hidden>; rel="next"`)
+			_, _ = w.Write([]byte("page"))
+		}))
+		defer server.Close()
+		err := testTransport(server).Pages(context.Background(), "/page1?initial=private", func(Response) error { return nil })
+		if err == nil || !strings.Contains(err.Error(), "parse GitHub API pagination link") {
+			t.Fatalf("err=%v", err)
+		}
+		for _, forbidden := range []string{"link-secret", "token=hidden", "initial=private"} {
+			if strings.Contains(err.Error(), forbidden) {
+				t.Errorf("pagination error exposed %q: %v", forbidden, err)
+			}
 		}
 	})
 
@@ -307,9 +419,36 @@ func TestHTTPErrorReportsFinalRedirectEndpoint(t *testing.T) {
 		http.Error(w, "invalid", http.StatusUnprocessableEntity)
 	}))
 	defer server.Close()
-	_, err := testTransport(server).Request(context.Background(), http.MethodDelete, "/start")
-	if err == nil || !strings.Contains(err.Error(), server.URL+"/final") || !strings.Contains(err.Error(), "request-123") {
+	_, err := testTransport(server).Request(context.Background(), http.MethodDelete, "/start?secret=hidden")
+	if err == nil || !strings.Contains(err.Error(), `"/final"`) || strings.Contains(err.Error(), server.URL) || strings.Contains(err.Error(), "secret=hidden") || !strings.Contains(err.Error(), "request-123") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestAPIErrorHidesUnsafeEffectiveURLStatusAndBody(t *testing.T) {
+	const secret = "response-secret"
+	responseURL, err := url.Parse("https://user:password@api.github.test/final?token=" + secret + "#fragment-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := New(Config{BaseURL: "https://api.github.test", HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnprocessableEntity,
+			Status:     "422 unsafe-status-" + secret,
+			Header:     http.Header{"X-Github-Request-Id": []string{"request-123"}},
+			Body:       io.NopCloser(strings.NewReader("body-" + secret)),
+			Request:    &http.Request{URL: responseURL},
+		}, nil
+	})}})
+	_, err = client.Request(context.Background(), http.MethodGet, "/start?initial="+secret)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity || !strings.Contains(err.Error(), `"/final"`) {
+		t.Fatalf("err=%v apiErr=%+v", err, apiErr)
+	}
+	for _, forbidden := range []string{secret, "unsafe-status", "user:password", "token=", "fragment-secret", "body-"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Errorf("API error exposed %q: %v", forbidden, err)
+		}
 	}
 }
 
@@ -336,11 +475,18 @@ func TestRedirectPolicyFailureIsNotRetried(t *testing.T) {
 	}))
 	defer server.Close()
 	client := testTransport(server)
-	client.httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return context.DeadlineExceeded }
+	const secret = "redirect-secret"
+	callbackErr := fmt.Errorf("failed at https://user:password@example.test/path?token=%s: %w", secret, context.DeadlineExceeded)
+	client.httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return callbackErr }
 	client.sleep = func(context.Context, time.Duration) error { waits++; return nil }
-	_, err := client.Request(context.Background(), http.MethodDelete, "/start")
-	if !errors.Is(err, context.DeadlineExceeded) || requests != 1 || waits != 0 {
+	_, err := client.Request(context.Background(), http.MethodDelete, "/start?initial="+secret)
+	if !errors.Is(err, callbackErr) || !errors.Is(err, context.DeadlineExceeded) || requests != 1 || waits != 0 {
 		t.Fatalf("err=%v requests=%d waits=%d", err, requests, waits)
+	}
+	for _, forbidden := range []string{secret, "user:password", "example.test", "token="} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Errorf("redirect policy error exposed %q: %v", forbidden, err)
+		}
 	}
 }
 
@@ -367,8 +513,9 @@ func TestRetriesTransientStatusesAtMostThreeTimesAndHonorsRetryAfter(t *testing.
 	client := testTransport(server)
 	client.sleep = func(_ context.Context, duration time.Duration) error { waits = append(waits, duration); return nil }
 	_, err := client.Request(context.Background(), http.MethodDelete, "/mutation")
-	if err == nil || !strings.Contains(err.Error(), "exhausted 3 attempts") || attempts != 3 || !reflect.DeepEqual(waits, []time.Duration{7 * time.Second, 7 * time.Second}) {
-		t.Fatalf("err=%v attempts=%d waits=%v", err, attempts, waits)
+	var apiErr *APIError
+	if err == nil || !strings.Contains(err.Error(), "exhausted 3 attempts") || !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusTooManyRequests || attempts != 3 || !reflect.DeepEqual(waits, []time.Duration{7 * time.Second, 7 * time.Second}) {
+		t.Fatalf("err=%v apiErr=%+v attempts=%d waits=%v", err, apiErr, attempts, waits)
 	}
 }
 
@@ -393,7 +540,8 @@ func TestCancellationDuringResponseReadStopsRetries(t *testing.T) {
 	client := New(Config{BaseURL: "https://api.github.test", Token: "test", HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		attempts++
 		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: &cancelingBody{cancel: cancel}}, nil
-	})}, Sleep: func(context.Context, time.Duration) error { waits++; return nil }})
+	})}})
+	client.sleep = func(context.Context, time.Duration) error { waits++; return nil }
 	_, err := client.Request(ctx, http.MethodGet, "/cancel")
 	if !errors.Is(err, context.Canceled) || attempts != 1 || waits != 0 {
 		t.Fatalf("err=%v attempts=%d waits=%d", err, attempts, waits)
@@ -444,3 +592,8 @@ type cancelingBody struct{ cancel context.CancelFunc }
 
 func (b *cancelingBody) Read([]byte) (int, error) { b.cancel(); return 0, io.ErrUnexpectedEOF }
 func (*cancelingBody) Close() error               { return nil }
+
+type errorBody struct{ err error }
+
+func (b *errorBody) Read([]byte) (int, error) { return 0, b.err }
+func (*errorBody) Close() error               { return nil }
