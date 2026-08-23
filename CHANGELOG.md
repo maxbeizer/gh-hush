@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ### Added
 
+- Report concise elapsed timings on stderr for the major phases (authentication and inbox listing, classification, preview report generation, apply) plus total runtime, using an injectable clock for deterministic tests. The apply summary carries an aggregate `elapsed`, and total runtime excludes the interactive confirmation wait.
 - Default preview-first workflow with an interactive, default-No confirmation prompt.
 - `--confirm` for explicitly applying proposed notification updates without a prompt.
 - `--dry-run` for a guaranteed preview-only run.

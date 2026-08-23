@@ -260,6 +260,7 @@ func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.
 }
 
 func TestApplyWithNoTargetsReportsEmptyProgressAndSummary(t *testing.T) {
+	setClock(t, time.Unix(0, 0), time.Unix(0, 0).Add(42700*time.Millisecond))
 	var out strings.Builder
 	client := &fakeClient{}
 
@@ -270,7 +271,7 @@ func TestApplyWithNoTargetsReportsEmptyProgressAndSummary(t *testing.T) {
 	}
 
 	want := "No notification updates to apply.\n" +
-		"application summary: targets=0; missing=0; no_longer_unread=0; protected=0; revalidation_failed=0; unsubscribe_succeeded=0; unsubscribe_failed=0; done_succeeded=0; done_failed=0\n"
+		"application summary: targets=0; missing=0; no_longer_unread=0; protected=0; revalidation_failed=0; unsubscribe_succeeded=0; unsubscribe_failed=0; done_succeeded=0; done_failed=0; elapsed=42.7s\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -634,4 +635,65 @@ func testConfig() config.Config {
 	cfg := config.Config{User: "octocat", GitHubOrganization: "github", Keep: config.Keep{ExternalOrganizationIssues: &on, PersonallyMentioned: &on, PersonallyAssigned: &off, IndividuallyReviewRequested: &off, AuthoredByUser: &off, TeamMentionedDiscussions: &off}}
 	cfg.Hush.AllOtherNotifications = &on
 	return cfg
+}
+
+// setClock installs a deterministic clock that returns the provided instants in
+// order, repeating the final instant once exhausted so timing output never
+// depends on wall-clock time or sleeping.
+func setClock(t *testing.T, instants ...time.Time) {
+	t.Helper()
+	original := now
+	var mu sync.Mutex
+	index := 0
+	now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		instant := instants[index]
+		if index < len(instants)-1 {
+			index++
+		}
+		return instant
+	}
+	t.Cleanup(func() { now = original })
+}
+
+func TestFormatDurationPrecision(t *testing.T) {
+	for _, tt := range []struct {
+		in   time.Duration
+		want string
+	}{
+		{-5 * time.Second, "0ms"},
+		{0, "0ms"},
+		{845 * time.Millisecond, "845ms"},
+		{time.Second, "1.0s"},
+		{18400 * time.Millisecond, "18.4s"},
+		{42700 * time.Millisecond, "42.7s"},
+		{62300 * time.Millisecond, "1m02.3s"},
+		{125 * time.Second, "2m05.0s"},
+	} {
+		if got := formatDuration(tt.in); got != tt.want {
+			t.Errorf("formatDuration(%v) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestApplySummaryReportsAggregateElapsed(t *testing.T) {
+	setClock(t, time.Unix(0, 0), time.Unix(0, 0).Add(3*time.Second))
+	client := &fakeClient{}
+	var out strings.Builder
+	if err := applyHushActions(context.Background(), &out, testConfig(), client, hushDecisions(1)); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "elapsed=3.0s") || !strings.Contains(out.String(), "done_succeeded=1") {
+		t.Fatalf("summary missing elapsed or counters: %q", out.String())
+	}
+}
+
+func TestClassifyReportsElapsed(t *testing.T) {
+	setClock(t, time.Unix(0, 0), time.Unix(0, 0).Add(1200*time.Millisecond))
+	var out strings.Builder
+	classifyNotifications(context.Background(), &out, testConfig(), &fakeClient{}, []model.Notification{notification("1", "subscribed"), notification("2", "mention")})
+	if !strings.Contains(out.String(), "classified 2/2 notifications in 1.2s") {
+		t.Fatalf("classification timing missing: %q", out.String())
+	}
 }

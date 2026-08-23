@@ -28,6 +28,20 @@ A no-flag invocation is preview-only unless stdin, preview output, and prompt ou
 
 The complete preview unconditionally shows every discovered notification's URL, subject type, repository, reason, proposed action, and matching policy evidence. Authentication, notification listing, configuration, and report-generation failures return nonzero without mutation. A required preview evidence failure is reported and conservatively safety-keeps that notification; it is not an eligible mutation target. Declining confirmation, having no eligible targets, a missing target record, a target that is no longer unread, and a genuine newly matching keep rule return zero.
 
+### Elapsed timings
+
+gh-hush reports concise, human-readable elapsed times on stderr for the major phases so a large inbox makes it clear where time went, without printing one line per request or notification:
+
+```text
+authenticated and listed 1120 unread notifications in 2.1s
+classified 1120/1120 notifications in 18.4s
+generated preview report in 120ms
+application summary: targets=…; …; done_failed=0; elapsed=42.7s
+total runtime: 63.4s (excludes interactive confirmation wait)
+```
+
+Durations use whole milliseconds under a second, one decimal of seconds under a minute (`18.4s`), and minutes above that (`1m02.3s`). Very fast phases render as `0ms`. The apply summary always carries its aggregate `elapsed` alongside the existing safety counters. Total runtime excludes the time spent waiting for interactive confirmation, as its label states. Failed or canceled runs still show timings for the phases that completed; the returned error identifies the interrupted phase, and a canceled apply reports its partial `elapsed`. Fine-grained per-request timing belongs to `--debug`. Timing instrumentation never changes worker bounds, operation ordering, retries, or cancellation, and workers do not write timing output directly.
+
 For each approved `unsubscribe_and_mark_done` target, gh-hush uses a pool of at most four workers. Operations for each individual thread remain strictly sequential:
 
 1. fetch the thread record again;

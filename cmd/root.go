@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/maxbeizer/gh-hush/internal/config"
 	"github.com/maxbeizer/gh-hush/internal/diagnostic"
@@ -70,6 +71,12 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 		command.SetContext(ctx)
 	}
 	diagnostic.Log(diagnostic.WithPhase(ctx, "startup"), "workflow_start")
+	runStart := now()
+	var confirmationWait time.Duration
+	printTotalRuntime := func() {
+		_, _ = fmt.Fprintf(stderr, "total runtime: %s (excludes interactive confirmation wait)\n", formatDuration(now().Sub(runStart)-confirmationWait))
+	}
+	inboxStart := now()
 	client, err := ghclient.NewCLIClient(ctx)
 	if err != nil {
 		diagnostic.Log(diagnostic.WithPhase(ctx, "authentication"), "operation_failed", diagnostic.String("operation", "token_lookup"))
@@ -92,32 +99,42 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 		return fmt.Errorf("fetch unread GitHub notifications: %w", err)
 	}
 	diagnostic.Log(listCtx, "operation_complete", diagnostic.String("operation", "list_notifications"), diagnostic.Int("count", len(threads)))
+	_, _ = fmt.Fprintf(stderr, "authenticated and listed %d unread %s in %s\n", len(threads), notificationWord(len(threads)), formatDuration(now().Sub(inboxStart)))
 	decisions := classifyNotifications(ctx, stderr, cfg, client, threads)
 	reportCtx := diagnostic.WithPhase(ctx, "report")
+	reportStart := now()
 	if err := report.Write(stdout, decisions); err != nil {
 		diagnostic.Log(reportCtx, "operation_failed", diagnostic.String("operation", "write_preview"))
 		return fmt.Errorf("write preview report: %w", err)
 	}
 	diagnostic.Log(reportCtx, "operation_complete", diagnostic.String("operation", "write_preview"), diagnostic.Int("count", len(decisions)))
+	_, _ = fmt.Fprintf(stderr, "generated preview report in %s\n", formatDuration(now().Sub(reportStart)))
 	targetCount := countHushActions(decisions)
 	if dryRun || targetCount == 0 {
+		printTotalRuntime()
 		return nil
 	}
 	if !confirm {
 		if !isTerminal(command.InOrStdin()) || !isTerminal(command.OutOrStdout()) || !isTerminal(command.ErrOrStderr()) {
 			_, _ = fmt.Fprintln(stderr, "Preview only: input, preview output, and prompt output must all be interactive terminals. Re-run with --confirm to apply these changes.")
+			printTotalRuntime()
 			return nil
 		}
+		waitStart := now()
 		approved, err := promptForConfirmation(command.InOrStdin(), stderr, targetCount)
+		confirmationWait = now().Sub(waitStart)
 		if err != nil {
 			return fmt.Errorf("read confirmation: %w", err)
 		}
 		if !approved {
 			_, _ = fmt.Fprintln(stderr, "No changes made.")
+			printTotalRuntime()
 			return nil
 		}
 	}
-	return applyHushActions(ctx, stderr, cfg, client, decisions)
+	err = applyHushActions(ctx, stderr, cfg, client, decisions)
+	printTotalRuntime()
+	return err
 }
 
 type notificationEnricher interface {
@@ -187,6 +204,7 @@ func applyHushActions(ctx context.Context, stderr io.Writer, cfg config.Config, 
 
 func applyHushActionsWithProgressMode(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationClient, decisions []model.Decision, interactive bool) error {
 	ctx = diagnostic.WithPhase(ctx, "apply")
+	applyStart := now()
 	if diagnostic.Enabled(ctx) {
 		interactive = false
 	}
@@ -280,9 +298,9 @@ func applyHushActionsWithProgressMode(ctx context.Context, stderr io.Writer, cfg
 	if err := ctx.Err(); err != nil && next < len(targets) {
 		failures = append(failures, err)
 	}
-	_, _ = fmt.Fprintf(stderr, "application summary: targets=%d; missing=%d; no_longer_unread=%d; protected=%d; revalidation_failed=%d; unsubscribe_succeeded=%d; unsubscribe_failed=%d; done_succeeded=%d; done_failed=%d\n",
+	_, _ = fmt.Fprintf(stderr, "application summary: targets=%d; missing=%d; no_longer_unread=%d; protected=%d; revalidation_failed=%d; unsubscribe_succeeded=%d; unsubscribe_failed=%d; done_succeeded=%d; done_failed=%d; elapsed=%s\n",
 		summary.Targets, summary.Missing, summary.NoLongerUnread, summary.Protected, summary.RevalidationFailed,
-		summary.UnsubscribeSucceeded, summary.UnsubscribeFailed, summary.DoneSucceeded, summary.DoneFailed)
+		summary.UnsubscribeSucceeded, summary.UnsubscribeFailed, summary.DoneSucceeded, summary.DoneFailed, formatDuration(now().Sub(applyStart)))
 	if len(failures) > 0 {
 		return fmt.Errorf("one or more notification updates did not complete safely: %w", errors.Join(failures...))
 	}
@@ -363,6 +381,7 @@ func ruleDescriptions(rules []model.Rule) string {
 
 func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationEnricher, threads []model.Notification) []model.Decision {
 	ctx = diagnostic.WithPhase(ctx, "classification")
+	classifyStart := now()
 	progress := newClassificationProgress(stderr, isTerminal(stderr) && !diagnostic.Enabled(ctx))
 	progress.start(len(threads))
 	if len(threads) == 0 {
@@ -412,5 +431,6 @@ func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Con
 		progress.update(completed)
 	}
 	progress.finish()
+	_, _ = fmt.Fprintf(stderr, "classified %d/%d %s in %s\n", len(threads), len(threads), notificationWord(len(threads)), formatDuration(now().Sub(classifyStart)))
 	return decisions
 }
