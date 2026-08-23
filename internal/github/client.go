@@ -127,30 +127,33 @@ func notificationThreadEndpoint(threadID string) (string, error) {
 	return "/notifications/threads/" + url.PathEscape(threadID), nil
 }
 
-// Enrich fetches only required evidence. Discussion comments use the REST
-// endpoint GET /repos/{owner}/{repo}/discussions/{number}/comments and follow
-// every Link page; only comment bodies are retained by the model.
-func (c *CLIClient) Enrich(ctx context.Context, thread model.Notification, requirements model.EnrichmentRequirements) model.Enrichment {
+// FetchSubject acquires the subject resource requested by policy evaluation.
+func (c *CLIClient) FetchSubject(ctx context.Context, thread model.Notification) (model.Resource, error) {
 	ctx = diagnostic.WithThread(ctx, thread.ID)
-	var enrichment model.Enrichment
-	if requirements.Subject {
-		if thread.Subject.URL == "" {
-			enrichment.SubjectErr = errors.New("notification subject did not include an API URL")
-		} else if err := c.get(ctx, thread.Subject.URL, &enrichment.Subject); err != nil {
-			enrichment.SubjectErr = fmt.Errorf("fetch subject: %w", err)
-		}
+	if thread.Subject.URL == "" {
+		return model.Resource{}, errors.New("notification subject did not include an API URL")
 	}
-	if requirements.DiscussionComments {
-		if thread.Subject.URL == "" {
-			enrichment.DiscussionCommentsErr = errors.New("notification Discussion did not include an API URL")
-		} else {
-			commentsURL := strings.TrimRight(thread.Subject.URL, "/") + "/comments?per_page=100"
-			if err := getPages(c.transport, ctx, commentsURL, &enrichment.DiscussionComments); err != nil {
-				enrichment.DiscussionCommentsErr = fmt.Errorf("fetch complete Discussion comment history: %w", err)
-			}
-		}
+	var subject model.Resource
+	if err := c.get(ctx, thread.Subject.URL, &subject); err != nil {
+		return subject, fmt.Errorf("fetch subject: %w", err)
 	}
-	return enrichment
+	return subject, nil
+}
+
+// FetchDiscussionComments acquires the complete Discussion comment history.
+// It follows every REST Link page and retains only fields represented by the
+// common resource model.
+func (c *CLIClient) FetchDiscussionComments(ctx context.Context, thread model.Notification) ([]model.Resource, error) {
+	ctx = diagnostic.WithThread(ctx, thread.ID)
+	if thread.Subject.URL == "" {
+		return nil, errors.New("notification Discussion did not include an API URL")
+	}
+	commentsURL := strings.TrimRight(thread.Subject.URL, "/") + "/comments?per_page=100"
+	var comments []model.Resource
+	if err := getPages(c.transport, ctx, commentsURL, &comments); err != nil {
+		return comments, fmt.Errorf("fetch complete Discussion comment history: %w", err)
+	}
+	return comments, nil
 }
 
 func (c *CLIClient) get(ctx context.Context, endpoint string, target any) error {

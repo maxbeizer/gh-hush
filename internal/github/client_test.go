@@ -129,7 +129,7 @@ func TestUnsubscribeThenDoneUseCorrectDeleteEndpointsInOrder(t *testing.T) {
 	}
 }
 
-func TestEnrichFetchesCompletePaginatedDiscussionHistory(t *testing.T) {
+func TestEvidenceAdapterFetchesSubjectAndCompletePaginatedDiscussionHistory(t *testing.T) {
 	var server *httptest.Server
 	var mu sync.Mutex
 	var paths []string
@@ -148,10 +148,15 @@ func TestEnrichFetchesCompletePaginatedDiscussionHistory(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	client := testClient(server)
 	item := model.Notification{Subject: model.Subject{Type: "Discussion", URL: server.URL + "/repos/github/repo/discussions/7"}}
-	e := testClient(server).Enrich(context.Background(), item, model.EnrichmentRequirements{Subject: true, DiscussionComments: true})
-	if e.SubjectErr != nil || e.DiscussionCommentsErr != nil || len(e.DiscussionComments) != 2 {
-		t.Fatalf("enrichment=%+v", e)
+	subject, subjectErr := client.FetchSubject(context.Background(), item)
+	comments, commentsErr := client.FetchDiscussionComments(context.Background(), item)
+	if subjectErr != nil || commentsErr != nil || subject.Body != "discussion" || len(comments) != 2 {
+		t.Fatalf("subject=%+v subjectErr=%v comments=%+v commentsErr=%v", subject, subjectErr, comments, commentsErr)
+	}
+	if comments[1].Body != "historical @github/notifications" {
+		t.Fatalf("comments=%+v", comments)
 	}
 	want := []string{"/repos/github/repo/discussions/7", "/repos/github/repo/discussions/7/comments?per_page=100", "/repos/github/repo/discussions/7/comments?per_page=100&page=2"}
 	if !reflect.DeepEqual(paths, want) {
@@ -159,7 +164,45 @@ func TestEnrichFetchesCompletePaginatedDiscussionHistory(t *testing.T) {
 	}
 }
 
-func TestEnrichFailureIsFieldSpecific(t *testing.T) {
+func TestEvidenceAdapterReturnsAccumulatedDiscussionCommentsWithPaginationError(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			http.Error(w, "later page unavailable", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Link", fmt.Sprintf(`<%s/discussion/comments?per_page=100&page=2>; rel="next"`, server.URL))
+		_, _ = w.Write([]byte(`[{"body":"first page @github/notifications"}]`))
+	}))
+	defer server.Close()
+
+	item := model.Notification{Subject: model.Subject{Type: "Discussion", URL: server.URL + "/discussion"}}
+	comments, err := testClient(server).FetchDiscussionComments(context.Background(), item)
+	if len(comments) != 1 || comments[0].Body != "first page @github/notifications" {
+		t.Fatalf("comments=%+v", comments)
+	}
+	if err == nil || !strings.Contains(err.Error(), "fetch complete Discussion comment history: ") || !strings.Contains(err.Error(), "400 Bad Request") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestEvidenceAdapterReturnsPartiallyDecodedSubjectWithError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"html_url":"https://github.test/discussion/7","body":123}`))
+	}))
+	defer server.Close()
+
+	item := model.Notification{Subject: model.Subject{URL: server.URL + "/discussion"}}
+	subject, err := testClient(server).FetchSubject(context.Background(), item)
+	if subject.HTMLURL != "https://github.test/discussion/7" {
+		t.Fatalf("subject=%+v", subject)
+	}
+	if err == nil || !strings.Contains(err.Error(), "fetch subject: decode GitHub API response") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestEvidenceAdapterReportsEachFieldFailureIndependently(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "comments") {
 			http.Error(w, "bad", http.StatusForbidden)
@@ -169,8 +212,10 @@ func TestEnrichFailureIsFieldSpecific(t *testing.T) {
 	}))
 	defer server.Close()
 	item := model.Notification{Subject: model.Subject{URL: server.URL + "/discussion"}}
-	e := testClient(server).Enrich(context.Background(), item, model.EnrichmentRequirements{Subject: true, DiscussionComments: true})
-	if e.SubjectErr != nil || e.DiscussionCommentsErr == nil {
-		t.Fatalf("enrichment=%+v", e)
+	client := testClient(server)
+	subject, subjectErr := client.FetchSubject(context.Background(), item)
+	_, commentsErr := client.FetchDiscussionComments(context.Background(), item)
+	if subjectErr != nil || subject.Body != "ok" || commentsErr == nil {
+		t.Fatalf("subject=%+v subjectErr=%v commentsErr=%v", subject, subjectErr, commentsErr)
 	}
 }

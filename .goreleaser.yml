@@ -1,3 +1,5 @@
+version: 2
+
 project_name: gh-hush
 
 builds:
@@ -10,10 +12,11 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w
+      - -s -w -X github.com/maxbeizer/gh-hush/cmd.Version={{ .Tag }}
 
 archives:
-  - format: binary
+  - formats:
+      - binary
     name_template: "{{ .ProjectName }}_{{ .Os }}-{{ .Arch }}"
 
 release:

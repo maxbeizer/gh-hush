@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-08-23
+
 ### Changed
 
 - Replace the public `unsubscribe` action with `unsubscribe_and_mark_done`.
@@ -30,8 +32,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ### Added
 
+- Report the installed release version with `--version`.
 - Report concise elapsed timings on stderr for the major phases (authentication and inbox listing, classification, preview report generation, apply) plus total runtime, using an injectable clock for deterministic tests. The apply summary carries an aggregate `elapsed`, and total runtime excludes the interactive confirmation wait.
 - Default preview-first workflow with an interactive, default-No confirmation prompt.
 - `--confirm` for explicitly applying proposed notification updates without a prompt.
 - `--dry-run` for a guaranteed preview-only run.
 - Initial release.
+
+[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/maxbeizer/gh-hush/releases/tag/v0.1.0
