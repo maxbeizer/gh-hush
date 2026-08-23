@@ -18,7 +18,6 @@ var (
 	teamSlugPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 )
 
-// DefaultPath returns the standard user-owned gh-hush configuration path.
 func DefaultPath() (string, error) {
 	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
 		if !filepath.IsAbs(configHome) {
@@ -26,7 +25,6 @@ func DefaultPath() (string, error) {
 		}
 		return filepath.Join(configHome, "gh-hush", "config.yml"), nil
 	}
-
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("find home directory: %w", err)
@@ -34,25 +32,17 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".config", "gh-hush", "config.yml"), nil
 }
 
-// Config is the user-owned v1 notification triage policy.
+// Config is the complete notification policy. Unknown YAML fields are rejected.
 type Config struct {
 	User                string   `yaml:"user"`
 	GitHubOrganization  string   `yaml:"github_organization"`
-	RunMode             string   `yaml:"run_mode"`
 	DiscussionTeamSlugs []string `yaml:"discussion_team_slugs"`
 	Keep                Keep     `yaml:"keep"`
-	Unsubscribe         struct {
+	Hush                struct {
 		AllOtherNotifications *bool `yaml:"all_other_notifications"`
-	} `yaml:"unsubscribe"`
-	Output struct {
-		DefaultMode                 string `yaml:"default_mode"`
-		IncludeKeepDecisions        *bool  `yaml:"include_keep_decisions"`
-		IncludeUnsubscribeDecisions *bool  `yaml:"include_unsubscribe_decisions"`
-		IncludeDecisionReasons      *bool  `yaml:"include_decision_reasons"`
-	} `yaml:"output"`
+	} `yaml:"hush"`
 }
 
-// Keep controls the ordered v1 keep rules.
 type Keep struct {
 	ExternalOrganizationIssues  *bool `yaml:"external_organization_issues"`
 	PersonallyMentioned         *bool `yaml:"personally_mentioned"`
@@ -62,7 +52,6 @@ type Keep struct {
 	TeamMentionedDiscussions    *bool `yaml:"team_mentioned_discussions"`
 }
 
-// Load reads and validates a configuration file.
 func Load(path string) (Config, []byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -75,7 +64,6 @@ func Load(path string) (Config, []byte, error) {
 	return cfg, data, nil
 }
 
-// Parse decodes and validates YAML configuration.
 func Parse(data []byte) (Config, error) {
 	var cfg Config
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -83,7 +71,6 @@ func Parse(data []byte) (Config, error) {
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode YAML: %w", err)
 	}
-
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
 		if err == nil {
@@ -91,14 +78,12 @@ func Parse(data []byte) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("decode YAML: %w", err)
 	}
-
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
 }
 
-// Validate checks the complete v1 schema and safety invariants.
 func (c Config) Validate() error {
 	var validationErrors []error
 	if !validGitHubLogin(c.User) {
@@ -107,42 +92,22 @@ func (c Config) Validate() error {
 	if !validGitHubLogin(c.GitHubOrganization) {
 		validationErrors = append(validationErrors, errors.New("github_organization must be a valid GitHub organization login"))
 	}
-	if c.RunMode != "ad_hoc" {
-		validationErrors = append(validationErrors, errors.New(`run_mode must be "ad_hoc"`))
-	}
-	if c.Output.DefaultMode != "dry_run" {
-		validationErrors = append(validationErrors, errors.New(`output.default_mode must be "dry_run"`))
-	}
-
 	required := map[string]*bool{
-		"keep.external_organization_issues":    c.Keep.ExternalOrganizationIssues,
-		"keep.personally_mentioned":            c.Keep.PersonallyMentioned,
-		"keep.personally_assigned":             c.Keep.PersonallyAssigned,
-		"keep.individually_review_requested":   c.Keep.IndividuallyReviewRequested,
-		"keep.authored_by_user":                c.Keep.AuthoredByUser,
-		"keep.team_mentioned_discussions":      c.Keep.TeamMentionedDiscussions,
-		"unsubscribe.all_other_notifications":  c.Unsubscribe.AllOtherNotifications,
-		"output.include_keep_decisions":        c.Output.IncludeKeepDecisions,
-		"output.include_unsubscribe_decisions": c.Output.IncludeUnsubscribeDecisions,
-		"output.include_decision_reasons":      c.Output.IncludeDecisionReasons,
+		"keep.external_organization_issues":  c.Keep.ExternalOrganizationIssues,
+		"keep.personally_mentioned":          c.Keep.PersonallyMentioned,
+		"keep.personally_assigned":           c.Keep.PersonallyAssigned,
+		"keep.individually_review_requested": c.Keep.IndividuallyReviewRequested,
+		"keep.authored_by_user":              c.Keep.AuthoredByUser,
+		"keep.team_mentioned_discussions":    c.Keep.TeamMentionedDiscussions,
+		"hush.all_other_notifications":       c.Hush.AllOtherNotifications,
 	}
 	for field, value := range required {
 		if value == nil {
 			validationErrors = append(validationErrors, fmt.Errorf("%s is required", field))
 		}
 	}
-
-	if c.Unsubscribe.AllOtherNotifications != nil && !*c.Unsubscribe.AllOtherNotifications {
-		validationErrors = append(validationErrors, errors.New("unsubscribe.all_other_notifications must be true in v1"))
-	}
-	for field, value := range map[string]*bool{
-		"output.include_keep_decisions":        c.Output.IncludeKeepDecisions,
-		"output.include_unsubscribe_decisions": c.Output.IncludeUnsubscribeDecisions,
-		"output.include_decision_reasons":      c.Output.IncludeDecisionReasons,
-	} {
-		if value != nil && !*value {
-			validationErrors = append(validationErrors, fmt.Errorf("%s must be true in v1", field))
-		}
+	if c.Hush.AllOtherNotifications != nil && !*c.Hush.AllOtherNotifications {
+		validationErrors = append(validationErrors, errors.New("hush.all_other_notifications must be true"))
 	}
 
 	seenTeams := make(map[string]struct{}, len(c.DiscussionTeamSlugs))
@@ -152,8 +117,7 @@ func (c Config) Validate() error {
 			validationErrors = append(validationErrors, fmt.Errorf("discussion_team_slugs entry %q must use org/team-slug form", team))
 			continue
 		}
-		org := parts[0]
-		if !strings.EqualFold(org, c.GitHubOrganization) {
+		if !strings.EqualFold(parts[0], c.GitHubOrganization) {
 			validationErrors = append(validationErrors, fmt.Errorf("discussion_team_slugs entry %q must belong to github_organization %q", team, c.GitHubOrganization))
 		}
 		key := strings.ToLower(team)
@@ -162,17 +126,11 @@ func (c Config) Validate() error {
 		}
 		seenTeams[key] = struct{}{}
 	}
-
 	return errors.Join(validationErrors...)
 }
 
 func validGitHubLogin(login string) bool {
-	return loginPattern.MatchString(login) &&
-		!strings.HasSuffix(login, "-") &&
-		!strings.Contains(login, "--")
+	return loginPattern.MatchString(login) && !strings.HasSuffix(login, "-") && !strings.Contains(login, "--")
 }
 
-// Enabled reports whether a required policy flag is enabled.
-func Enabled(value *bool) bool {
-	return value != nil && *value
-}
+func Enabled(value *bool) bool { return value != nil && *value }

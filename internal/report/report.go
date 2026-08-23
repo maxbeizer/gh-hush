@@ -8,39 +8,30 @@ import (
 	"github.com/maxbeizer/gh-hush/internal/model"
 )
 
-// Write renders an itemized human-readable preview report.
 func Write(w io.Writer, decisions []model.Decision) error {
 	if _, err := fmt.Fprintln(w, "gh-hush preview"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintln(w, "No GitHub mutations were made while generating this preview: subscriptions, read state, and notification settings are unchanged."); err != nil {
+	if _, err := fmt.Fprintln(w, "No GitHub mutations were made while generating this preview: subscriptions, read state, and inbox state are unchanged."); err != nil {
 		return err
 	}
 	if len(decisions) == 0 {
-		_, err := fmt.Fprintln(w, "\nGitHub returned zero notifications.")
+		_, err := fmt.Fprintln(w, "\nGitHub returned zero active inbox notifications.")
 		return err
 	}
-
-	keepCount := 0
-	unsubscribeCount := 0
+	keepCount, hushCount := 0, 0
 	for index, decision := range decisions {
 		if decision.Action == model.ActionKeep {
 			keepCount++
 		} else {
-			unsubscribeCount++
+			hushCount++
 		}
-
 		if _, err := fmt.Fprintf(w, "\n%d. [%s] %s\n", index+1, strings.ToUpper(string(decision.Action)), decision.Thread.Subject.Title); err != nil {
 			return err
 		}
-		lines := []struct {
-			label string
-			value string
-		}{
-			{"URL", decision.URL},
-			{"Subject type", decision.Thread.Subject.Type},
-			{"Repository", decision.Thread.Repository.FullName},
-			{"Notification reason", decision.Thread.Reason},
+		lines := []struct{ label, value string }{
+			{"URL", decision.URL}, {"Subject type", decision.Thread.Subject.Type},
+			{"Repository", decision.Thread.Repository.FullName}, {"Notification reason", decision.Thread.Reason},
 			{"Proposed action", string(decision.Action)},
 		}
 		for _, line := range lines {
@@ -49,7 +40,7 @@ func Write(w io.Writer, decisions []model.Decision) error {
 			}
 		}
 		if decision.EnrichmentError != "" {
-			if _, err := fmt.Fprintf(w, "   Enrichment warning: %s\n", decision.EnrichmentError); err != nil {
+			if _, err := fmt.Fprintf(w, "   Evidence warning: %s\n", decision.EnrichmentError); err != nil {
 				return err
 			}
 		}
@@ -62,7 +53,6 @@ func Write(w io.Writer, decisions []model.Decision) error {
 			}
 		}
 	}
-
-	_, err := fmt.Fprintf(w, "\nSummary: %d keep, %d propose unsubscribe, %d total\n", keepCount, unsubscribeCount, len(decisions))
+	_, err := fmt.Fprintf(w, "\nSummary: %d keep, %d propose unsubscribe_and_mark_done, %d total\n", keepCount, hushCount, len(decisions))
 	return err
 }

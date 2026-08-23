@@ -23,58 +23,54 @@ type Subject struct {
 	Type             string `json:"type"`
 }
 
-// Resource is enriched issue, pull request, discussion, or comment data.
+// Resource is the small common subset of subject and comment API responses
+// needed to classify notifications. GitHub calls an Issue/PR/Discussion owner
+// "user" and a Commit/Release owner "author".
 type Resource struct {
 	HTMLURL            string `json:"html_url"`
 	Body               string `json:"body"`
 	User               User   `json:"user"`
+	Author             User   `json:"author"`
 	Assignees          []User `json:"assignees"`
 	RequestedReviewers []User `json:"requested_reviewers"`
 	RequestedTeams     []Team `json:"requested_teams"`
 }
 
-// User identifies a GitHub user.
 type User struct {
 	Login string `json:"login"`
 }
 
-// Team identifies a GitHub team.
 type Team struct {
 	Slug string `json:"slug"`
 }
 
-// EnrichmentRequirements identifies the evidence fields needed to evaluate the
-// enabled policy for one notification.
+// EnrichmentRequirements identifies evidence needed for one classification.
 type EnrichmentRequirements struct {
-	Subject       bool
-	LatestComment bool
+	Subject            bool
+	DiscussionComments bool
 }
 
-// Enrichment contains fetched evidence and field-specific uncertainty.
+// Enrichment contains fresh evidence and field-specific uncertainty.
 type Enrichment struct {
-	Subject          Resource
-	LatestComment    Resource
-	SubjectErr       error
-	LatestCommentErr error
+	Subject               Resource
+	DiscussionComments    []Resource
+	SubjectErr            error
+	DiscussionCommentsErr error
 }
 
-// Action is a proposed notification subscription decision.
+// Action is a proposed notification decision.
 type Action string
 
 const (
-	// ActionKeep leaves the notification subscription unchanged.
-	ActionKeep Action = "keep"
-	// ActionUnsubscribe proposes removing the notification subscription.
-	ActionUnsubscribe Action = "unsubscribe"
+	ActionKeep                   Action = "keep"
+	ActionUnsubscribeAndMarkDone Action = "unsubscribe_and_mark_done"
 )
 
-// Rule records an exact policy match and its evidence.
 type Rule struct {
 	ID       string `json:"id"`
 	Evidence string `json:"evidence"`
 }
 
-// Decision is one explainable classification.
 type Decision struct {
 	Thread          Notification
 	URL             string

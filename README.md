@@ -1,16 +1,14 @@
 # gh-hush
 
-`gh-hush` is a safe, explainable GitHub notification triage extension. It fetches notifications through the authenticated `gh` CLI session, evaluates a user-owned YAML policy in deterministic order, and previews what it will keep or unsubscribe from before making any changes.
+`gh-hush` is a safe, explainable GitHub notification triage extension. It fetches every active inbox notification—including read notifications that have not been marked Done—through the account authenticated by `gh`, evaluates a user-owned policy, and previews every decision before making changes.
 
 ## Install
-
-From a release:
 
 ```bash
 gh extension install maxbeizer/gh-hush
 ```
 
-From a local checkout:
+For a local checkout:
 
 ```bash
 make build
@@ -19,60 +17,37 @@ make install-local
 
 ## Usage
 
-Run without flags to generate a read-only preview and, when running in an interactive terminal, confirm whether to apply the proposed unsubscriptions:
-
 ```bash
-gh hush
+gh hush             # preview; prompt with default No when fully interactive
+gh hush --dry-run   # preview only
+gh hush --confirm   # preview and apply without prompting
 ```
 
-The confirmation defaults to **No**. The exact decisions shown in the preview are applied; notifications are not fetched and classified a second time.
+A no-flag invocation is preview-only unless stdin, preview output, and prompt output are all interactive terminals. Redirected or piped execution requires `--confirm` to mutate GitHub. `--dry-run` and `--confirm` are mutually exclusive.
 
-To preview without prompting or making changes:
+The complete preview unconditionally shows every notification's URL, subject type, repository, reason, proposed action, and matching policy evidence. Authentication, active-inbox listing, configuration, and report-generation failures return nonzero without mutation. A required preview evidence failure is reported and conservatively safety-keeps that notification; it is not an eligible mutation target. Declining confirmation, having no eligible targets, a target's disappearance, and a genuine newly matching keep rule return zero.
 
-```bash
-gh hush --dry-run
-```
+For each approved `unsubscribe_and_mark_done` target, gh-hush sequentially:
 
-To apply the preview without an interactive prompt, such as from automation, explicitly confirm it:
+1. refetches the active inbox and reevaluates the target using fresh policy evidence;
+2. skips it successfully if it disappeared or now genuinely matches a keep/safety rule, but records a failure if required fresh evidence is unavailable;
+3. unsubscribes with `DELETE /notifications/threads/{id}/subscription`;
+4. marks it Done with `DELETE /notifications/threads/{id}`; and
+5. refetches the active inbox to verify that it disappeared.
 
-```bash
-gh hush --confirm
-```
+It never marks a target Done when unsubscribe fails. Item failures do not prevent later targets from being attempted. The final application summary separately reports revalidation, unsubscribe, Done, and verification outcomes; unavailable revalidation evidence and every unresolved mutation or verification failure return nonzero.
 
-A no-flag invocation remains read-only unless its input, preview output, and prompt output (stderr) are all interactive terminals. Redirected or piped input or output therefore requires `--confirm` to apply changes. `--dry-run` and `--confirm` cannot be combined.
+Temporary network errors and HTTP 429, 502, 503, and 504 responses are attempted at most three times. Retries honor GitHub retry/rate-limit headers and otherwise use exponential backoff with jitter. Cancellation stops retries immediately.
 
-The report includes every notification's URL, subject type, repository, notification reason, proposed action, and exact matching rules with evidence. Progress is written to stderr while subject details are fetched, so large notification inboxes remain visibly active.
-
-Preview guarantees:
-
-- uses the authenticated `gh` session and GitHub Notifications API;
-- makes no GitHub mutations while generating the preview;
-- evaluates keep rules before the catch-all unsubscribe rule;
-- fetches only evidence required by enabled rules and conservatively keeps a thread when that required evidence is unavailable;
-- reports an explicit message when GitHub successfully returns zero notifications;
-- shows command help when the default configuration file is missing; and
-- fails visibly when authentication, notification fetching, report generation, or other configuration errors occur, including a missing explicitly provided configuration.
+Marking Done removes the current notification from the inbox; it is not the same as PATCHing a thread to mark it read. Hushing is not a permanent ignore: a future personal mention, assignment, or individual review request can bring the thread back.
 
 ## Configuration
 
-Policy stays outside this repository. By default, gh-hush reads:
-
-```text
-$XDG_CONFIG_HOME/gh-hush/config.yml
-```
-
-When `XDG_CONFIG_HOME` is unset, it reads `~/.config/gh-hush/config.yml`. Override that location explicitly when needed:
-
-```bash
-gh hush --config /path/to/another-policy.yml
-```
-
-The configuration schema is:
+The default path is `$XDG_CONFIG_HOME/gh-hush/config.yml`, or `~/.config/gh-hush/config.yml` when `XDG_CONFIG_HOME` is unset. Override it with `--config PATH`.
 
 ```yaml
 user: YOUR-GITHUB-LOGIN
 github_organization: YOUR-PRIMARY-ORGANIZATION
-run_mode: ad_hoc
 
 discussion_team_slugs:
   - YOUR-PRIMARY-ORGANIZATION/YOUR-TEAM
@@ -85,32 +60,26 @@ keep:
   authored_by_user: true
   team_mentioned_discussions: true
 
-unsubscribe:
+hush:
   all_other_notifications: true
-
-output:
-  default_mode: dry_run
-  include_keep_decisions: true
-  include_unsubscribe_decisions: true
-  include_decision_reasons: true
 ```
 
-Unknown fields, missing policy fields, duplicate teams, malformed logins or team slugs, non-ad-hoc execution, and output settings that would hide decisions or reasons are rejected. The configured user must match the account authenticated by `gh auth`.
+This schema is intentionally incompatible with earlier versions: `run_mode`, `unsubscribe`, and the entire `output` section are unknown fields and are rejected. Every keep boolean is required (and may be `false`); `hush.all_other_notifications` is required and must be `true`. Complete previews are unconditional. The configured user must match the authenticated account.
 
-Keep flags may be set to `false` to disable that rule. The catch-all unsubscribe rule and complete explainable output are required. Rules run in this order:
+Keep rules protect:
 
-1. Keep issues outside `github_organization`.
-2. Keep personal mentions and personal assignments.
-3. Keep individual review requests; a team review request alone does not match.
-4. Keep work authored by `user`.
-5. Keep Discussions whose subject or latest comment contains an exact configured team mention.
-6. Propose unsubscribing from everything else.
+1. notifications from repositories outside `github_organization`, for every subject type;
+2. `reason: mention`;
+3. `reason: assign` or a current personal assignment;
+4. a current individual pull-request review request (team-only requests do not match);
+5. work authored by `user`; and
+6. Discussions containing an exact configured team mention in the body or anywhere in the complete paginated comment history.
 
-If subject or comment data required by an enabled rule cannot be fetched and no earlier keep rule already matched, the safety rule keeps the thread instead of guessing. Failures for evidence that no enabled rule needs do not trigger a safety keep. An enabled Discussion team-mention rule with an empty `discussion_team_slugs` list requires no Discussion evidence because no team can match.
+Required evidence failures conservatively safety-keep a notification. Discussion team mentions found in historical comments continue to protect the Discussion until it is manually resolved.
 
-Applying an unsubscribe removes the current thread subscription and marks its existing notification as read, so it does not appear in the next preview. It does not ignore the thread forever: GitHub may subscribe you again after later activity such as a new mention.
+Only `Issue`, `PullRequest`, `Discussion`, `Commit`, `Release`, and `CheckSuite` are eligible for the catch-all hush action. Unsupported, unknown, sensitive, administrative, and security-related subject types are safety-kept.
 
-There is no scheduler or recurring mode. Run `gh hush` only when you choose to triage notifications.
+> The historical configuration key `external_organization_issues` is retained, but its protection now intentionally applies to all notification subject types.
 
 ## Development
 
@@ -118,6 +87,5 @@ There is no scheduler or recurring mode. Run `gh hush` only when you choose to t
 make build
 make test
 make ci
+make lint
 ```
-
-Releases are built for macOS, Linux, and Windows by GoReleaser when a `v*` tag is pushed.
