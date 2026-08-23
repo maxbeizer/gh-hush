@@ -162,6 +162,10 @@ type applicationResult struct {
 }
 
 func applyHushActions(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationClient, decisions []model.Decision) error {
+	return applyHushActionsWithProgressMode(ctx, stderr, cfg, client, decisions, isTerminal(stderr))
+}
+
+func applyHushActionsWithProgressMode(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationClient, decisions []model.Decision, interactive bool) error {
 	targets := make([]model.Decision, 0, countHushActions(decisions))
 	for _, decision := range decisions {
 		if decision.Action == model.ActionUnsubscribeAndMarkDone {
@@ -171,7 +175,8 @@ func applyHushActions(ctx context.Context, stderr io.Writer, cfg config.Config, 
 
 	summary := applicationSummary{Targets: len(targets)}
 	workerCount := min(applyMaxWorkers, len(targets))
-	_, _ = fmt.Fprintf(stderr, "applying %d notification updates (unsubscribe and mark Done), with up to %d concurrent threads and per-thread revalidation...\n", summary.Targets, workerCount)
+	progress := newApplicationProgress(stderr, interactive)
+	progress.start(len(targets))
 
 	type job struct {
 		index   int
@@ -197,16 +202,20 @@ func applyHushActions(ctx context.Context, stderr io.Writer, cfg config.Config, 
 	}
 
 	ordered := make([]applicationResult, len(targets))
-	next, running := 0, 0
-	cancelled := false
+	next, running, completed := 0, 0, 0
+	recordResult := func(result applicationResult) {
+		ordered[result.index] = result
+		running--
+		completed++
+		progress.update(completed)
+	}
+	cancelled := ctx.Err() != nil
 	for running > 0 || (!cancelled && next < len(targets)) {
 		if ctx.Err() != nil {
 			cancelled = true
 		}
 		if cancelled || next == len(targets) {
-			result := <-results
-			ordered[result.index] = result
-			running--
+			recordResult(<-results)
 			continue
 		}
 		select {
@@ -214,15 +223,17 @@ func applyHushActions(ctx context.Context, stderr io.Writer, cfg config.Config, 
 			next++
 			running++
 		case result := <-results:
-			ordered[result.index] = result
-			running--
+			recordResult(result)
 		case <-ctx.Done():
 			cancelled = true
 		}
 	}
 	close(jobs)
 	workers.Wait()
+	progress.finish(completed, cancelled)
 
+	// The live status line is finalized before ordered, durable diagnostics are
+	// emitted, so a later progress update can never overwrite a skip message.
 	var failures []error
 	for index := 0; index < next; index++ {
 		result := ordered[index]

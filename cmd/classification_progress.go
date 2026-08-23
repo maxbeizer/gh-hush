@@ -7,74 +7,137 @@ import (
 	"unicode/utf8"
 )
 
-var classificationSpinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+var progressSpinnerFrames = [...]string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-type classificationProgress struct {
+type phaseProgress struct {
 	output        io.Writer
 	interactive   bool
+	emptyMessage  string
+	status        func(completed, total int) string
+	finished      func(completed, total int, stopped bool) string
 	total         int
 	frame         int
 	previousWidth int
+	live          bool
 }
 
-func newClassificationProgress(output io.Writer, interactive bool) *classificationProgress {
-	return &classificationProgress{output: output, interactive: interactive}
+func newPhaseProgress(
+	output io.Writer,
+	interactive bool,
+	emptyMessage string,
+	status func(completed, total int) string,
+	finished func(completed, total int, stopped bool) string,
+) *phaseProgress {
+	return &phaseProgress{
+		output:       output,
+		interactive:  interactive,
+		emptyMessage: emptyMessage,
+		status:       status,
+		finished:     finished,
+	}
 }
 
-func (p *classificationProgress) start(total int) {
+func (p *phaseProgress) start(total int) {
 	p.total = total
 	if total == 0 {
-		_, _ = fmt.Fprintln(p.output, "No unread notifications to classify.")
+		_, _ = fmt.Fprintln(p.output, p.emptyMessage)
 		return
 	}
-	if p.interactive {
-		p.replaceLine(p.statusLine(0))
-		return
-	}
-	_, _ = fmt.Fprintln(p.output, p.statusLine(0))
+	p.renderStatus(0)
 }
 
-func (p *classificationProgress) update(completed int) {
+func (p *phaseProgress) update(completed int) {
 	if p.total == 0 {
 		return
 	}
 	if p.interactive {
-		p.frame = (p.frame + 1) % len(classificationSpinnerFrames)
-		p.replaceLine(p.statusLine(completed))
+		p.frame = (p.frame + 1) % len(progressSpinnerFrames)
+		p.renderStatus(completed)
 		return
 	}
 	if completed%25 == 0 && completed < p.total {
-		_, _ = fmt.Fprintln(p.output, p.statusLine(completed))
+		p.renderStatus(completed)
 	}
 }
 
-func (p *classificationProgress) finish() {
+// finish replaces an interactive live line before writing its newline. Durable
+// diagnostics can therefore be printed afterward without being overwritten.
+func (p *phaseProgress) finish(completed int, stopped bool) {
 	if p.total == 0 {
 		return
 	}
-	line := fmt.Sprintf("✓ Classified %d/%d unread %s (100%%)", p.total, p.total, notificationWord(p.total))
+	line := p.finished(completed, p.total, stopped)
 	if p.interactive {
 		p.replaceLine(line)
 		_, _ = fmt.Fprintln(p.output)
+		p.live = false
 		return
 	}
 	_, _ = fmt.Fprintln(p.output, line)
 }
 
-func (p *classificationProgress) statusLine(completed int) string {
-	percentage := completed * 100 / p.total
-	prefix := "Classifying"
+func (p *phaseProgress) renderStatus(completed int) {
+	line := p.status(completed, p.total)
 	if p.interactive {
-		prefix = classificationSpinnerFrames[p.frame] + " Classifying"
+		line = progressSpinnerFrames[p.frame] + " " + line
+		p.replaceLine(line)
+		return
 	}
-	return fmt.Sprintf("%s unread %s (read-only)… %d/%d (%d%%)", prefix, notificationWord(p.total), completed, p.total, percentage)
+	_, _ = fmt.Fprintln(p.output, line)
 }
 
-func (p *classificationProgress) replaceLine(line string) {
+func (p *phaseProgress) replaceLine(line string) {
 	width := utf8.RuneCountInString(line)
 	padding := max(0, p.previousWidth-width)
-	_, _ = fmt.Fprintf(p.output, "\r%s%s", line, strings.Repeat(" ", padding))
+	if p.live {
+		_, _ = fmt.Fprint(p.output, "\r")
+	}
+	_, _ = fmt.Fprintf(p.output, "%s%s", line, strings.Repeat(" ", padding))
 	p.previousWidth = width
+	p.live = true
+}
+
+type classificationProgress struct {
+	phase *phaseProgress
+}
+
+func newClassificationProgress(output io.Writer, interactive bool) *classificationProgress {
+	return &classificationProgress{phase: newPhaseProgress(
+		output,
+		interactive,
+		"No unread notifications to classify.",
+		func(completed, total int) string {
+			return fmt.Sprintf("Classifying unread %s (read-only)… %d/%d (%d%%)", notificationWord(total), completed, total, percentage(completed, total))
+		},
+		func(_, total int, _ bool) string {
+			return fmt.Sprintf("✓ Classified %d/%d unread %s (100%%)", total, total, notificationWord(total))
+		},
+	)}
+}
+
+func (p *classificationProgress) start(total int)      { p.phase.start(total) }
+func (p *classificationProgress) update(completed int) { p.phase.update(completed) }
+func (p *classificationProgress) finish()              { p.phase.finish(p.phase.total, false) }
+
+func newApplicationProgress(output io.Writer, interactive bool) *phaseProgress {
+	return newPhaseProgress(
+		output,
+		interactive,
+		"No notification updates to apply.",
+		func(completed, total int) string {
+			return fmt.Sprintf("Applying %s (unsubscribe, mark Done, and revalidate)… %d/%d (%d%%)", notificationUpdateWord(total), completed, total, percentage(completed, total))
+		},
+		func(completed, total int, stopped bool) string {
+			if !stopped && completed == total {
+				return fmt.Sprintf("✓ Finished applying %d/%d %s (100%%)", completed, total, notificationUpdateWord(total))
+			}
+			return fmt.Sprintf("Stopped applying after %d/%d %s (%d%%)", completed, total, notificationUpdateWord(total), percentage(completed, total))
+		},
+	)
+}
+
+func percentage(completed, total int) int {
+	return completed * 100 / total
 }
 
 func notificationWord(count int) string {
@@ -82,4 +145,11 @@ func notificationWord(count int) string {
 		return "notification"
 	}
 	return "notifications"
+}
+
+func notificationUpdateWord(count int) string {
+	if count == 1 {
+		return "notification update"
+	}
+	return "notification updates"
 }

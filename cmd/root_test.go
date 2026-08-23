@@ -238,6 +238,54 @@ func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.
 	})
 }
 
+func TestApplyWithNoTargetsReportsEmptyProgressAndSummary(t *testing.T) {
+	var out strings.Builder
+	client := &fakeClient{}
+
+	if err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{
+		{Thread: notification("1", "mention"), Action: model.ActionKeep, URL: "one"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	want := "No notification updates to apply.\n" +
+		"application summary: targets=0; missing=0; no_longer_unread=0; protected=0; revalidation_failed=0; unsubscribe_succeeded=0; unsubscribe_failed=0; done_succeeded=0; done_failed=0\n"
+	if got := out.String(); got != want {
+		t.Fatalf("output mismatch\n got: %q\nwant: %q", got, want)
+	}
+	if len(client.calls) != 0 {
+		t.Fatalf("unexpected mutations: %v", client.calls)
+	}
+}
+
+func TestApplyInteractiveProgressFinishesBeforeDurableDiagnostics(t *testing.T) {
+	item := notification("1", "subscribed")
+	client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{found: false}}}}
+	var out strings.Builder
+
+	if err := applyHushActionsWithProgressMode(context.Background(), &out, testConfig(), client, []model.Decision{
+		{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"},
+	}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	got := out.String()
+	final := strings.Index(got, "✓ Finished applying 1/1 notification update (100%)")
+	diagnostic := strings.Index(got, "skip one: notification thread record is no longer available")
+	if final < 0 || diagnostic < 0 || final >= diagnostic {
+		t.Fatalf("progress was not finalized before diagnostic: %q", got)
+	}
+	if newline := strings.Index(got[final:], "\n"); newline < 0 || final+newline >= diagnostic {
+		t.Fatalf("diagnostic does not begin after the live line's newline: %q", got)
+	}
+	if carriageReturn := strings.LastIndex(got, "\r"); carriageReturn >= diagnostic {
+		t.Fatalf("progress update could overwrite durable diagnostic: %q", got)
+	}
+	if !strings.Contains(got[diagnostic:], "application summary: targets=1; missing=1") {
+		t.Fatalf("aggregate summary missing after diagnostic: %q", got)
+	}
+}
+
 func TestApplyUsesBoundedConcurrencyAndPreservesPerThreadOrdering(t *testing.T) {
 	const targetCount = 8
 	client := newBlockingClient(targetCount)
@@ -273,9 +321,10 @@ func TestApplyUsesBoundedConcurrencyAndPreservesPerThreadOrdering(t *testing.T) 
 func TestApplyCancellationStopsFurtherScheduling(t *testing.T) {
 	client := newBlockingClient(20)
 	ctx, cancel := context.WithCancel(context.Background())
+	var out strings.Builder
 	done := make(chan error, 1)
 	go func() {
-		done <- applyHushActions(ctx, io.Discard, testConfig(), client, hushDecisions(20))
+		done <- applyHushActions(ctx, &out, testConfig(), client, hushDecisions(20))
 	}()
 	for range applyMaxWorkers {
 		select {
@@ -295,6 +344,55 @@ func TestApplyCancellationStopsFurtherScheduling(t *testing.T) {
 	}
 	if got := client.startedCount(); got != applyMaxWorkers {
 		t.Fatalf("started=%d want=%d; work continued scheduling after cancellation", got, applyMaxWorkers)
+	}
+	if got := out.String(); !strings.Contains(got, "Stopped applying after 4/20 notification updates (20%)") {
+		t.Fatalf("cancellation progress did not report partial completion: %q", got)
+	}
+}
+
+func TestApplyCancellationAfterAllTargetsScheduledStillReportsStopped(t *testing.T) {
+	client := newBlockingClient(2)
+	ctx, cancel := context.WithCancel(context.Background())
+	var out strings.Builder
+	done := make(chan error, 1)
+	go func() {
+		done <- applyHushActions(ctx, &out, testConfig(), client, hushDecisions(2))
+	}()
+	for range 2 {
+		select {
+		case <-client.started:
+		case <-time.After(time.Second):
+			t.Fatal("workers did not start")
+		}
+	}
+	cancel()
+	if err := <-done; err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want context cancellation", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Stopped applying after 2/2 notification updates (100%)") || strings.Contains(got, "✓ Finished applying") {
+		t.Fatalf("cancellation was presented as successful completion: %q", got)
+	}
+}
+
+func TestApplyWithPreCancelledContextDoesNotWaitForResults(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out strings.Builder
+	done := make(chan error, 1)
+	go func() {
+		done <- applyHushActions(ctx, &out, testConfig(), &fakeClient{}, hushDecisions(2))
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !errors.Is(err, context.Canceled) {
+			t.Fatalf("err=%v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("apply waited for a worker result even though no work was scheduled")
+	}
+	if got := out.String(); !strings.Contains(got, "Stopped applying after 0/2 notification updates (0%)") {
+		t.Fatalf("pre-cancelled progress mismatch: %q", got)
 	}
 }
 
