@@ -39,17 +39,17 @@ func TestNewCLIClientPinsTokenLookupToGitHubDotComAPIHost(t *testing.T) {
 	}
 }
 
-func TestListNotificationsUsesAllTrueAndPaginatesReadActiveEntries(t *testing.T) {
+func TestListNotificationsUsesUnreadOnlyDefaultAndPaginates(t *testing.T) {
 	var server *httptest.Server
 	var queries []string
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		queries = append(queries, r.URL.RawQuery)
 		if r.URL.Query().Get("page") == "2" {
-			_, _ = w.Write([]byte(`[{"id":"read-active","unread":false}]`))
+			_, _ = w.Write([]byte(`[{"id":"second","unread":true}]`))
 			return
 		}
-		w.Header().Set("Link", fmt.Sprintf(`<%s/notifications?all=true&per_page=100&page=2>; rel="next"`, server.URL))
-		_, _ = w.Write([]byte(`[{"id":"unread-active","unread":true}]`))
+		w.Header().Set("Link", fmt.Sprintf(`<%s/notifications?per_page=100&page=2>; rel="next"`, server.URL))
+		_, _ = w.Write([]byte(`[{"id":"first","unread":true}]`))
 	}))
 	defer server.Close()
 	got, err := testClient(server).ListNotifications(context.Background())
@@ -57,38 +57,45 @@ func TestListNotificationsUsesAllTrueAndPaginatesReadActiveEntries(t *testing.T)
 		t.Fatal(err)
 	}
 	ids := []string{got[0].ID, got[1].ID}
-	if !reflect.DeepEqual(ids, []string{"unread-active", "read-active"}) {
+	if !reflect.DeepEqual(ids, []string{"first", "second"}) {
 		t.Fatalf("IDs=%v", ids)
 	}
 	for _, query := range queries {
-		if !strings.Contains(query, "all=true") || !strings.Contains(query, "per_page=100") {
+		if strings.Contains(query, "all=") || !strings.Contains(query, "per_page=100") {
 			t.Fatalf("query=%q", query)
 		}
 	}
 }
 
-func TestGetNotificationFetchesOnlyRequestedThreadAndHandlesMissing(t *testing.T) {
+func TestGetNotificationFetchesOnlyRequestedThreadAndHandlesHistoricalAndMissing(t *testing.T) {
 	var paths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
-		if r.URL.Path == "/notifications/threads/missing" {
+		switch r.URL.Path {
+		case "/notifications/threads/missing":
 			http.NotFound(w, r)
-			return
+		case "/notifications/threads/historical":
+			_, _ = w.Write([]byte(`{"id":"historical","unread":false}`))
+		default:
+			_, _ = w.Write([]byte(`{"id":"123","unread":true,"reason":"subscribed"}`))
 		}
-		_, _ = w.Write([]byte(`{"id":"123","reason":"subscribed"}`))
 	}))
 	defer server.Close()
 	client := testClient(server)
 
 	got, found, err := client.GetNotification(context.Background(), "123")
-	if err != nil || !found || got.ID != "123" {
+	if err != nil || !found || got.ID != "123" || !got.Unread {
 		t.Fatalf("notification=%#v found=%v err=%v", got, found, err)
+	}
+	historical, found, err := client.GetNotification(context.Background(), "historical")
+	if err != nil || !found || historical.Unread {
+		t.Fatalf("historical=%#v found=%v err=%v", historical, found, err)
 	}
 	_, found, err = client.GetNotification(context.Background(), "missing")
 	if err != nil || found {
 		t.Fatalf("missing found=%v err=%v", found, err)
 	}
-	want := []string{"/notifications/threads/123", "/notifications/threads/missing"}
+	want := []string{"/notifications/threads/123", "/notifications/threads/historical", "/notifications/threads/missing"}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("paths=%v want=%v", paths, want)
 	}
@@ -102,7 +109,7 @@ func TestPaginationResolvesRelativeLinksAgainstCurrentPage(t *testing.T) {
 			_, _ = w.Write([]byte(`[{"id":"second"}]`))
 			return
 		}
-		w.Header().Set("Link", `<?all=true&per_page=100&page=2>; type="application/json"; rel="next"`)
+		w.Header().Set("Link", `<?per_page=100&page=2>; type="application/json"; rel="next"`)
 		_, _ = w.Write([]byte(`[{"id":"first"}]`))
 	}))
 	defer server.Close()
@@ -115,8 +122,8 @@ func TestPaginationResolvesRelativeLinksAgainstCurrentPage(t *testing.T) {
 		t.Fatalf("notifications=%v", notifications)
 	}
 	want := []string{
-		"/notifications?all=true&per_page=100",
-		"/notifications?all=true&per_page=100&page=2",
+		"/notifications?per_page=100",
+		"/notifications?per_page=100&page=2",
 	}
 	if !reflect.DeepEqual(requestURIs, want) {
 		t.Fatalf("request URIs=%v want=%v", requestURIs, want)
@@ -149,7 +156,7 @@ func TestPaginationResolvesRelativeLinksAgainstFinalRedirectURL(t *testing.T) {
 		t.Fatalf("notifications=%v", notifications)
 	}
 	want := []string{
-		"/notifications?all=true&per_page=100",
+		"/notifications?per_page=100",
 		"/redirected/pages/first",
 		"/redirected/pages/next?page=2",
 	}

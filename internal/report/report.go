@@ -16,7 +16,7 @@ func Write(w io.Writer, decisions []model.Decision) error {
 		return err
 	}
 	if len(decisions) == 0 {
-		_, err := fmt.Fprintln(w, "\nGitHub returned zero active inbox notifications.")
+		_, err := fmt.Fprintln(w, "\nGitHub returned zero unread notifications.")
 		return err
 	}
 	keepCount, hushCount := 0, 0

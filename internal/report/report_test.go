@@ -24,12 +24,12 @@ func TestWriteIncludesCompletePreviewAndRenamedAction(t *testing.T) {
 	}
 }
 
-func TestWriteZeroActiveNotifications(t *testing.T) {
+func TestWriteZeroUnreadNotifications(t *testing.T) {
 	var output bytes.Buffer
 	if err := Write(&output, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "zero active inbox notifications") {
+	if !strings.Contains(output.String(), "zero unread notifications") {
 		t.Fatalf("output=%s", output.String())
 	}
 }

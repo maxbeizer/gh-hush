@@ -111,7 +111,7 @@ func TestApplyHushActionsSuccessAndEndpointOrdering(t *testing.T) {
 	if strings.Join(client.calls, ",") != "unsubscribe:1,done:1" {
 		t.Fatalf("calls=%v", client.calls)
 	}
-	for _, text := range []string{"unsubscribe_succeeded=1", "done_succeeded=1", "verification_succeeded=1"} {
+	for _, text := range []string{"unsubscribe_succeeded=1", "done_succeeded=1"} {
 		if !strings.Contains(progress.String(), text) {
 			t.Errorf("progress missing %q: %s", text, progress.String())
 		}
@@ -127,8 +127,8 @@ func TestApplyDoesNotMarkDoneAfterUnsubscribeFailureAndContinues(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	requireOperations(t, client, "1", "get,enrich,unsubscribe")
-	requireOperations(t, client, "2", "get,enrich,unsubscribe,done,get")
-	if !strings.Contains(progress.String(), "unsubscribe_failed=1") || !strings.Contains(progress.String(), "verification_succeeded=1") {
+	requireOperations(t, client, "2", "get,enrich,unsubscribe,done")
+	if !strings.Contains(progress.String(), "unsubscribe_failed=1") || !strings.Contains(progress.String(), "done_succeeded=1") {
 		t.Fatalf("summary=%s", progress.String())
 	}
 }
@@ -145,13 +145,13 @@ func TestApplyContinuesAfterDoneRetryExhaustion(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	requireOperations(t, client, "1", "get,enrich,unsubscribe,done")
-	requireOperations(t, client, "2", "get,enrich,unsubscribe,done,get")
-	if !strings.Contains(out.String(), "done_failed=1") || !strings.Contains(out.String(), "verification_succeeded=1") {
+	requireOperations(t, client, "2", "get,enrich,unsubscribe,done")
+	if !strings.Contains(out.String(), "done_failed=1") || !strings.Contains(out.String(), "done_succeeded=1") {
 		t.Fatalf("summary=%s", out.String())
 	}
 }
 
-func TestApplyPartialDoneAndVerificationFailures(t *testing.T) {
+func TestApplyReportsDoneFailureAndDoesNotVerifyThreadDisappearance(t *testing.T) {
 	t.Run("Done failure", func(t *testing.T) {
 		item := notification("1", "subscribed")
 		client := &fakeClient{doneFailures: map[string]error{"1": errors.New("done failed")}}
@@ -161,13 +161,18 @@ func TestApplyPartialDoneAndVerificationFailures(t *testing.T) {
 			t.Fatalf("err=%v out=%s", err, out.String())
 		}
 	})
-	t.Run("verification still present", func(t *testing.T) {
+	t.Run("successful Done is final", func(t *testing.T) {
 		item := notification("1", "subscribed")
+		// A second GET would return the historical record, as GitHub does after
+		// Done. The operation must end after GitHub accepts MarkThreadDone.
 		client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{thread: item, found: true}, {thread: item, found: true}}}}
 		var out strings.Builder
-		err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}})
-		if err == nil || !strings.Contains(err.Error(), "verification still found") || !strings.Contains(out.String(), "verification_failed=1") {
-			t.Fatalf("err=%v out=%s", err, out.String())
+		if err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
+			t.Fatal(err)
+		}
+		requireOperations(t, client, "1", "get,enrich,unsubscribe,done")
+		if !strings.Contains(out.String(), "done_succeeded=1") || strings.Contains(out.String(), "verification") {
+			t.Fatalf("out=%s", out.String())
 		}
 	})
 }
@@ -187,42 +192,36 @@ func TestApplyRevalidationEvidenceFailureReturnsErrorAndContinues(t *testing.T) 
 		t.Fatalf("err=%v", err)
 	}
 	requireOperations(t, client, "1", "get,enrich")
-	requireOperations(t, client, "2", "get,enrich,unsubscribe,done,get")
-	if !strings.Contains(out.String(), "revalidation_failed=1") || !strings.Contains(out.String(), "verification_succeeded=1") {
+	requireOperations(t, client, "2", "get,enrich,unsubscribe,done")
+	if !strings.Contains(out.String(), "revalidation_failed=1") || !strings.Contains(out.String(), "done_succeeded=1") {
 		t.Fatalf("summary=%s", out.String())
 	}
 }
 
-func TestApplyVerificationRetryExhaustionReturnsErrorAndContinues(t *testing.T) {
-	first, second := notification("1", "subscribed"), notification("2", "subscribed")
-	client := &fakeClient{getResults: map[string][]fakeGetResult{
-		"1": {{thread: first, found: true}, {err: errors.New("request exhausted 3 attempts")}},
-	}}
-	var out strings.Builder
-	err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{
-		{Thread: first, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"},
-		{Thread: second, Action: model.ActionUnsubscribeAndMarkDone, URL: "two"},
-	})
-	if err == nil || !strings.Contains(err.Error(), "verification failed") || !strings.Contains(err.Error(), "exhausted 3 attempts") {
-		t.Fatalf("err=%v", err)
-	}
-	requireOperations(t, client, "1", "get,enrich,unsubscribe,done,get")
-	requireOperations(t, client, "2", "get,enrich,unsubscribe,done,get")
-	if !strings.Contains(out.String(), "verification_failed=1") || !strings.Contains(out.String(), "verification_succeeded=1") {
-		t.Fatalf("summary=%s", out.String())
-	}
-}
-
-func TestApplyRevalidationSkipsDisappearedOrNewlyProtected(t *testing.T) {
-	t.Run("disappeared", func(t *testing.T) {
+func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.T) {
+	t.Run("missing", func(t *testing.T) {
 		item := notification("1", "subscribed")
 		client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{found: false}}}}
 		var out strings.Builder
 		if err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
 			t.Fatal(err)
 		}
-		if len(client.calls) != 0 || !strings.Contains(out.String(), "disappeared=1") {
+		if len(client.calls) != 0 || !strings.Contains(out.String(), "missing=1") {
 			t.Fatalf("calls=%v out=%s", client.calls, out.String())
+		}
+	})
+	t.Run("no longer unread", func(t *testing.T) {
+		item := notification("1", "subscribed")
+		readRecord := item
+		readRecord.Unread = false
+		client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{thread: readRecord, found: true}}}}
+		var out strings.Builder
+		if err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
+			t.Fatal(err)
+		}
+		requireOperations(t, client, "1", "get")
+		if !strings.Contains(out.String(), "no_longer_unread=1") || !strings.Contains(out.String(), "cannot distinguish read inbox entries from Done history") {
+			t.Fatalf("out=%s", out.String())
 		}
 	})
 	t.Run("protected", func(t *testing.T) {
@@ -267,7 +266,7 @@ func TestApplyUsesBoundedConcurrencyAndPreservesPerThreadOrdering(t *testing.T) 
 		t.Fatalf("maximum active=%d want=%d", client.maximumActive(), applyMaxWorkers)
 	}
 	for index := 1; index <= targetCount; index++ {
-		requireOperations(t, &client.fakeClient, fmt.Sprint(index), "get,enrich,unsubscribe,done,get")
+		requireOperations(t, &client.fakeClient, fmt.Sprint(index), "get,enrich,unsubscribe,done")
 	}
 }
 
@@ -322,7 +321,7 @@ func TestClassifyNotificationsPreservesOrder(t *testing.T) {
 	items := []model.Notification{notification("1", "subscribed"), notification("2", "mention")}
 	var out strings.Builder
 	got := classifyNotifications(context.Background(), &out, testConfig(), &fakeClient{}, items)
-	if got[0].Thread.ID != "1" || got[1].Thread.ID != "2" || !strings.Contains(out.String(), "active notifications") {
+	if got[0].Thread.ID != "1" || got[1].Thread.ID != "2" || !strings.Contains(out.String(), "unread notifications") {
 		t.Fatalf("got=%#v out=%s", got, out.String())
 	}
 }
@@ -484,7 +483,7 @@ func hushDecisions(count int) []model.Decision {
 }
 
 func notification(id, reason string) model.Notification {
-	return model.Notification{ID: id, Reason: reason, Repository: model.Repository{FullName: "github/repo"}, Subject: model.Subject{Type: "Issue", URL: "subject"}}
+	return model.Notification{ID: id, Unread: true, Reason: reason, Repository: model.Repository{FullName: "github/repo"}, Subject: model.Subject{Type: "Issue", URL: "subject"}}
 }
 func testConfig() config.Config {
 	on := true

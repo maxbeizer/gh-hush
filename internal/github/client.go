@@ -72,18 +72,23 @@ func (c *CLIClient) CurrentUser(ctx context.Context) (string, error) {
 	return user.Login, nil
 }
 
-// ListNotifications returns all active inbox entries, including entries which
-// are read but have not been marked Done.
+// ListNotifications returns unread notifications. GitHub's all=true listing
+// also includes historical threads marked Done, and the REST representation
+// does not distinguish those threads from read notifications still in the
+// inbox. Restricting discovery to unread notifications avoids reprocessing
+// that ambiguous history.
 func (c *CLIClient) ListNotifications(ctx context.Context) ([]model.Notification, error) {
 	var notifications []model.Notification
-	if err := c.getPages(ctx, "/notifications?all=true&per_page=100", &notifications); err != nil {
-		return nil, fmt.Errorf("list active notifications: %w", err)
+	if err := c.getPages(ctx, "/notifications?per_page=100", &notifications); err != nil {
+		return nil, fmt.Errorf("list unread notifications: %w", err)
 	}
 	return notifications, nil
 }
 
-// GetNotification returns one active notification without downloading the
-// complete inbox. A missing thread is reported with found=false.
+// GetNotification returns the thread record, which may be historical and
+// already marked Done. found means only that the record is retrievable; callers
+// must not interpret it as proof that the thread is currently in the inbox.
+// A missing thread record is reported with found=false.
 func (c *CLIClient) GetNotification(ctx context.Context, threadID string) (notification model.Notification, found bool, err error) {
 	endpoint, err := notificationThreadEndpoint(threadID)
 	if err != nil {

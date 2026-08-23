@@ -9,11 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 ### Changed
 
 - Replace the public `unsubscribe` action with `unsubscribe_and_mark_done`.
-- Fetch all active inbox notifications, including read notifications not marked Done.
-- Revalidate each approved target with a fresh inbox snapshot and fresh policy evidence before sequential mutation.
-- Unsubscribe with `DELETE /notifications/threads/{id}/subscription`, mark Done with `DELETE /notifications/threads/{id}`, and verify removal from the active inbox.
+- Fetch unread notifications only because GitHub's `all=true` listing cannot distinguish read inbox entries from Done/history records.
+- Revalidate each approved target with a fresh thread record and fresh policy evidence before sequential mutation, conservatively skipping records that are no longer unread.
+- Unsubscribe with `DELETE /notifications/threads/{id}/subscription` and mark Done with `DELETE /notifications/threads/{id}`; treat GitHub's successful Done response as success because thread GET continues returning historical records.
 - Retry transient network, rate-limit, and service errors at most three attempts, honoring GitHub retry headers.
-- Report revalidation-evidence, unsubscribe, Done, and verification outcomes separately and return nonzero for unresolved partial failures while continuing later targets.
+- Report revalidation-evidence, unsubscribe, and Done outcomes separately and return nonzero for unresolved partial failures while continuing later targets.
 - Protect external-organization notifications for every subject type.
 - Protect Discussions when an exact configured team mention appears anywhere in the complete paginated comment history.
 - Use an explicit catch-all allowlist: Issue, PullRequest, Discussion, Commit, Release, and CheckSuite; safety-keep every other subject type.
@@ -21,6 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ### Fixed
 
+- Remove the invalid post-Done disappearance check: the individual thread endpoint returns historical records after a successful Done request.
+- Prevent `all=true` discovery from reprocessing Done/history records; the public REST API does not expose a reliable distinction between those records and read-but-active entries.
 - Mark notifications Done instead of merely marking them read. PATCHing a notification thread marks it read but does not remove it from GitHub's inbox.
 - Treat preview evidence failures as conservative safety keeps rather than command failures, so a run with no eligible targets returns zero as documented; fresh revalidation evidence failures still return nonzero.
 - Resolve relative pagination links against the final URL after same-origin redirects.

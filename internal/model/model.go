@@ -3,6 +3,7 @@ package model
 // Notification is the subset of a GitHub notification thread used by gh-hush.
 type Notification struct {
 	ID         string     `json:"id"`
+	Unread     bool       `json:"unread"`
 	Reason     string     `json:"reason"`
 	UpdatedAt  string     `json:"updated_at"`
 	Repository Repository `json:"repository"`

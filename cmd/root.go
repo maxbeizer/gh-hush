@@ -73,7 +73,7 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 	}
 	threads, err := client.ListNotifications(command.Context())
 	if err != nil {
-		return fmt.Errorf("fetch active GitHub notification inbox: %w", err)
+		return fmt.Errorf("fetch unread GitHub notifications: %w", err)
 	}
 	decisions := classifyNotifications(command.Context(), stderr, cfg, client, threads)
 	if err := report.Write(stdout, decisions); err != nil {
@@ -145,10 +145,9 @@ func isTerminal(stream any) bool {
 }
 
 type applicationSummary struct {
-	Targets, Disappeared, Protected, RevalidationFailed int
-	UnsubscribeSucceeded, UnsubscribeFailed             int
-	DoneSucceeded, DoneFailed                           int
-	VerificationSucceeded, VerificationFailed           int
+	Targets, Missing, NoLongerUnread, Protected, RevalidationFailed int
+	UnsubscribeSucceeded, UnsubscribeFailed                         int
+	DoneSucceeded, DoneFailed                                       int
 }
 
 // Four in-flight threads allow useful overlap without producing the request
@@ -238,10 +237,9 @@ func applyHushActions(ctx context.Context, stderr io.Writer, cfg config.Config, 
 	if err := ctx.Err(); err != nil && next < len(targets) {
 		failures = append(failures, err)
 	}
-	_, _ = fmt.Fprintf(stderr, "application summary: targets=%d; disappeared=%d; protected=%d; revalidation_failed=%d; unsubscribe_succeeded=%d; unsubscribe_failed=%d; done_succeeded=%d; done_failed=%d; verification_succeeded=%d; verification_failed=%d\n",
-		summary.Targets, summary.Disappeared, summary.Protected, summary.RevalidationFailed,
-		summary.UnsubscribeSucceeded, summary.UnsubscribeFailed, summary.DoneSucceeded, summary.DoneFailed,
-		summary.VerificationSucceeded, summary.VerificationFailed)
+	_, _ = fmt.Fprintf(stderr, "application summary: targets=%d; missing=%d; no_longer_unread=%d; protected=%d; revalidation_failed=%d; unsubscribe_succeeded=%d; unsubscribe_failed=%d; done_succeeded=%d; done_failed=%d\n",
+		summary.Targets, summary.Missing, summary.NoLongerUnread, summary.Protected, summary.RevalidationFailed,
+		summary.UnsubscribeSucceeded, summary.UnsubscribeFailed, summary.DoneSucceeded, summary.DoneFailed)
 	if len(failures) > 0 {
 		return fmt.Errorf("one or more notification updates did not complete safely: %w", errors.Join(failures...))
 	}
@@ -257,8 +255,16 @@ func applyHushAction(ctx context.Context, cfg config.Config, client notification
 		return result
 	}
 	if !found {
-		result.summary.Disappeared++
-		result.messages = append(result.messages, fmt.Sprintf("skip %s: target disappeared (already resolved)", preview.URL))
+		result.summary.Missing++
+		result.messages = append(result.messages, fmt.Sprintf("skip %s: notification thread record is no longer available", preview.URL))
+		return result
+	}
+	// The per-thread endpoint returns historical Done records too. unread=false
+	// is ambiguous: it can mean read-but-still-inbox or historical/Done. Skip it
+	// rather than claiming that this GET proves current inbox membership.
+	if !current.Unread {
+		result.summary.NoLongerUnread++
+		result.messages = append(result.messages, fmt.Sprintf("skip %s: target is no longer unread; GitHub's REST API cannot distinguish read inbox entries from Done history", preview.URL))
 		return result
 	}
 	enrichment := client.Enrich(ctx, current, policy.EnrichmentRequirements(cfg, current))
@@ -290,31 +296,18 @@ func applyHushAction(ctx context.Context, cfg config.Config, client notification
 		return result
 	}
 	result.summary.DoneSucceeded++
-	_, stillPresent, err := client.GetNotification(ctx, current.ID)
-	if err != nil {
-		result.summary.VerificationFailed++
-		result.failure = fmt.Errorf("%s: Done returned success but verification failed: %w", fresh.URL, err)
-		return result
-	}
-	if stillPresent {
-		result.summary.VerificationFailed++
-		result.failure = fmt.Errorf("%s: Done returned success but verification still found thread %s", fresh.URL, current.ID)
-		return result
-	}
-	result.summary.VerificationSucceeded++
 	return result
 }
 
 func addApplicationSummary(total *applicationSummary, delta applicationSummary) {
-	total.Disappeared += delta.Disappeared
+	total.Missing += delta.Missing
+	total.NoLongerUnread += delta.NoLongerUnread
 	total.Protected += delta.Protected
 	total.RevalidationFailed += delta.RevalidationFailed
 	total.UnsubscribeSucceeded += delta.UnsubscribeSucceeded
 	total.UnsubscribeFailed += delta.UnsubscribeFailed
 	total.DoneSucceeded += delta.DoneSucceeded
 	total.DoneFailed += delta.DoneFailed
-	total.VerificationSucceeded += delta.VerificationSucceeded
-	total.VerificationFailed += delta.VerificationFailed
 }
 
 func ruleDescriptions(rules []model.Rule) string {
@@ -357,7 +350,7 @@ func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Con
 		workers.Wait()
 		close(results)
 	}()
-	_, _ = fmt.Fprintf(stderr, "classifying %d active notifications (read-only)...\n", len(threads))
+	_, _ = fmt.Fprintf(stderr, "classifying %d unread notifications (read-only)...\n", len(threads))
 	decisions := make([]model.Decision, len(threads))
 	completed := 0
 	for classified := range results {

@@ -1,6 +1,6 @@
 # gh-hush
 
-`gh-hush` is a safe, explainable GitHub notification triage extension. It fetches every active inbox notification—including read notifications that have not been marked Done—through the account authenticated by `gh`, evaluates a user-owned policy, and previews every decision before making changes.
+`gh-hush` is a safe, explainable GitHub notification triage extension. It fetches unread notifications through the account authenticated by `gh`, evaluates a user-owned policy, and previews every decision before making changes.
 
 ## Install
 
@@ -25,17 +25,23 @@ gh hush --confirm   # preview and apply without prompting
 
 A no-flag invocation is preview-only unless stdin, preview output, and prompt output are all interactive terminals. Redirected or piped execution requires `--confirm` to mutate GitHub. `--dry-run` and `--confirm` are mutually exclusive.
 
-The complete preview unconditionally shows every notification's URL, subject type, repository, reason, proposed action, and matching policy evidence. Authentication, active-inbox listing, configuration, and report-generation failures return nonzero without mutation. A required preview evidence failure is reported and conservatively safety-keeps that notification; it is not an eligible mutation target. Declining confirmation, having no eligible targets, a target's disappearance, and a genuine newly matching keep rule return zero.
+The complete preview unconditionally shows every discovered notification's URL, subject type, repository, reason, proposed action, and matching policy evidence. Authentication, notification listing, configuration, and report-generation failures return nonzero without mutation. A required preview evidence failure is reported and conservatively safety-keeps that notification; it is not an eligible mutation target. Declining confirmation, having no eligible targets, a missing target record, a target that is no longer unread, and a genuine newly matching keep rule return zero.
 
-For each approved `unsubscribe_and_mark_done` target, gh-hush sequentially:
+For each approved `unsubscribe_and_mark_done` target, gh-hush uses a pool of at most four workers. Operations for each individual thread remain strictly sequential:
 
-1. refetches the active inbox and reevaluates the target using fresh policy evidence;
-2. skips it successfully if it disappeared or now genuinely matches a keep/safety rule, but records a failure if required fresh evidence is unavailable;
-3. unsubscribes with `DELETE /notifications/threads/{id}/subscription`;
-4. marks it Done with `DELETE /notifications/threads/{id}`; and
-5. refetches the active inbox to verify that it disappeared.
+1. fetch the thread record again;
+2. skip it if it is missing or no longer unread, otherwise reevaluate it using fresh policy evidence;
+3. skip it if it now matches a keep/safety rule, or record a failure if required fresh evidence is unavailable;
+4. unsubscribe with `DELETE /notifications/threads/{id}/subscription`; and
+5. mark it Done with `DELETE /notifications/threads/{id}`.
 
-It never marks a target Done when unsubscribe fails. Item failures do not prevent later targets from being attempted. The final application summary separately reports revalidation, unsubscribe, Done, and verification outcomes; unavailable revalidation evidence and every unresolved mutation or verification failure return nonzero.
+It never marks a target Done when unsubscribe fails. A successful 2xx response to the Done request (documented by GitHub as `204`) is treated as success; gh-hush does not perform an unsupported disappearance check afterward. Item failures do not prevent later targets from being attempted. The final application summary separately reports revalidation, unsubscribe, and Done outcomes; unavailable revalidation evidence and mutation failures return nonzero.
+
+### GitHub notification API limitation
+
+GitHub's individual thread endpoint can return a historical record after the thread has been marked Done. The `GET /notifications?all=true` listing also includes Done/history records, while the returned REST representation provides no reliable field that distinguishes those records from read notifications still in the inbox. Consequently, gh-hush cannot safely process read-but-still-inbox notifications without risking repeat mutations of Done history.
+
+As a conservative tradeoff, discovery uses GitHub's default unread-only notification listing, and pre-mutation revalidation requires the fresh thread record to remain `unread: true`. A retrievable thread record proves only that the record exists, not that it is in the active inbox. Read notifications must be handled manually (or made unread before a later run). This avoids claiming unsupported active-inbox membership guarantees, though it cannot eliminate changes that race with a request already in progress.
 
 Temporary network errors and HTTP 429, 502, 503, and 504 responses are attempted at most three times. Retries honor GitHub retry/rate-limit headers and otherwise use exponential backoff with jitter. Cancellation stops retries immediately.
 
