@@ -319,6 +319,8 @@ func ruleDescriptions(rules []model.Rule) string {
 }
 
 func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationEnricher, threads []model.Notification) []model.Decision {
+	progress := newClassificationProgress(stderr, isTerminal(stderr))
+	progress.start(len(threads))
 	if len(threads) == 0 {
 		return nil
 	}
@@ -350,15 +352,13 @@ func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Con
 		workers.Wait()
 		close(results)
 	}()
-	_, _ = fmt.Fprintf(stderr, "classifying %d unread notifications (read-only)...\n", len(threads))
 	decisions := make([]model.Decision, len(threads))
 	completed := 0
 	for classified := range results {
 		decisions[classified.index] = classified.decision
 		completed++
-		if completed%25 == 0 || completed == len(threads) {
-			_, _ = fmt.Fprintf(stderr, "classified %d/%d notifications\n", completed, len(threads))
-		}
+		progress.update(completed)
 	}
+	progress.finish()
 	return decisions
 }
