@@ -146,9 +146,7 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 	}
 	if evidenceErr := errors.Join(evidenceErrors...); evidenceErr != nil {
 		decision.EnrichmentError = evidenceErr.Error()
-		if len(decision.Rules) == 0 {
-			decision.Rules = append(decision.Rules, model.Rule{ID: ruleSafetyFailure, Evidence: fmt.Sprintf("required classification evidence was unavailable: %v", evidenceErr)})
-		}
+		decision.Rules = append(decision.Rules, model.Rule{ID: ruleSafetyFailure, Evidence: fmt.Sprintf("required classification evidence was unavailable: %v", evidenceErr)})
 	}
 	if len(decision.Rules) > 0 {
 		decision.Action = model.ActionKeep

@@ -79,6 +79,35 @@ func TestDiscussionHistoricalTeamMentionProtectsAndExactMatchIsRequired(t *testi
 	}
 }
 
+func TestPartialEvidenceIsEvaluatedAlongsideSafetyFailure(t *testing.T) {
+	t.Run("Discussion comment team mention", func(t *testing.T) {
+		source := &testEvidenceSource{
+			comments:    []model.Resource{{Body: "historical @github/notifications mention"}},
+			commentsErr: errors.New("later page unavailable"),
+		}
+		d := NewEvaluator(testConfig(), source).Evaluate(context.Background(), thread("1", "github/repo", "Discussion", "subscribed"))
+		wantRules := []model.Rule{
+			{ID: ruleDiscussionTeam, Evidence: "discussion body or complete comment history contains exact team mention @github/notifications"},
+			{ID: ruleSafetyFailure, Evidence: "required classification evidence was unavailable: later page unavailable"},
+		}
+		if d.Action != model.ActionKeep || !reflect.DeepEqual(d.Rules, wantRules) || d.EnrichmentError != "later page unavailable" {
+			t.Fatalf("decision=%#v", d)
+		}
+	})
+
+	t.Run("subject URL", func(t *testing.T) {
+		source := &testEvidenceSource{
+			subject:    model.Resource{HTMLURL: "https://github.test/issues/1"},
+			subjectErr: errors.New("subject decode incomplete"),
+		}
+		d := NewEvaluator(testConfig(), source).Evaluate(context.Background(), thread("1", "github/repo", "Issue", "subscribed"))
+		wantRules := []model.Rule{{ID: ruleSafetyFailure, Evidence: "required classification evidence was unavailable: subject decode incomplete"}}
+		if d.Action != model.ActionKeep || d.URL != source.subject.HTMLURL || !reflect.DeepEqual(d.Rules, wantRules) || d.EnrichmentError != "subject decode incomplete" {
+			t.Fatalf("decision=%#v", d)
+		}
+	})
+}
+
 func TestRequiredEvidenceFailureSafetyIsFieldSpecific(t *testing.T) {
 	item := thread("1", "github/repo", "Discussion", "subscribed")
 	source := &testEvidenceSource{

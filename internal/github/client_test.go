@@ -939,6 +939,44 @@ func TestEvidenceAdapterFetchesSubjectAndCompletePaginatedDiscussionHistory(t *t
 	}
 }
 
+func TestEvidenceAdapterReturnsAccumulatedDiscussionCommentsWithPaginationError(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			http.Error(w, "later page unavailable", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Link", fmt.Sprintf(`<%s/discussion/comments?per_page=100&page=2>; rel="next"`, server.URL))
+		_, _ = w.Write([]byte(`[{"body":"first page @github/notifications"}]`))
+	}))
+	defer server.Close()
+
+	item := model.Notification{Subject: model.Subject{Type: "Discussion", URL: server.URL + "/discussion"}}
+	comments, err := testClient(server).FetchDiscussionComments(context.Background(), item)
+	if len(comments) != 1 || comments[0].Body != "first page @github/notifications" {
+		t.Fatalf("comments=%+v", comments)
+	}
+	if err == nil || !strings.Contains(err.Error(), "fetch complete Discussion comment history: ") || !strings.Contains(err.Error(), "400 Bad Request") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestEvidenceAdapterReturnsPartiallyDecodedSubjectWithError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"html_url":"https://github.test/discussion/7","body":123}`))
+	}))
+	defer server.Close()
+
+	item := model.Notification{Subject: model.Subject{URL: server.URL + "/discussion"}}
+	subject, err := testClient(server).FetchSubject(context.Background(), item)
+	if subject.HTMLURL != "https://github.test/discussion/7" {
+		t.Fatalf("subject=%+v", subject)
+	}
+	if err == nil || !strings.Contains(err.Error(), "fetch subject: decode GitHub API response") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestEvidenceAdapterReportsEachFieldFailureIndependently(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "comments") {

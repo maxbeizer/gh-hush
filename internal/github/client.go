@@ -145,7 +145,7 @@ func (c *CLIClient) FetchSubject(ctx context.Context, thread model.Notification)
 	}
 	var subject model.Resource
 	if err := c.get(ctx, thread.Subject.URL, &subject); err != nil {
-		return model.Resource{}, fmt.Errorf("fetch subject: %w", err)
+		return subject, fmt.Errorf("fetch subject: %w", err)
 	}
 	return subject, nil
 }
@@ -161,7 +161,7 @@ func (c *CLIClient) FetchDiscussionComments(ctx context.Context, thread model.No
 	commentsURL := strings.TrimRight(thread.Subject.URL, "/") + "/comments?per_page=100"
 	var comments []model.Resource
 	if err := c.getPages(ctx, commentsURL, &comments); err != nil {
-		return nil, fmt.Errorf("fetch complete Discussion comment history: %w", err)
+		return comments, fmt.Errorf("fetch complete Discussion comment history: %w", err)
 	}
 	return comments, nil
 }
