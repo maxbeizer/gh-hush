@@ -22,6 +22,9 @@ import (
 	"golang.org/x/term"
 )
 
+// Version is replaced with the release tag by GoReleaser.
+var Version = "dev"
+
 type runFunc func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool, bool) error
 
 func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -33,7 +36,7 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 	var dryRun, confirm, debug bool
 	rootCmd := &cobra.Command{
 		Use: "gh-hush", Short: "Explainable, policy-driven GitHub notification triage",
-		SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs,
+		Version: Version, SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			provided := cmd.Flags().Changed("config")
 			if !provided {

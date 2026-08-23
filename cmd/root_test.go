@@ -32,6 +32,22 @@ hush:
   all_other_notifications: true
 `
 
+func TestVersionFlag(t *testing.T) {
+	original := Version
+	Version = "v0.1.0-test"
+	t.Cleanup(func() { Version = original })
+
+	var out strings.Builder
+	command := NewRootCommand(&out, io.Discard)
+	command.SetArgs([]string{"--version"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "gh-hush version v0.1.0-test\n"; got != want {
+		t.Fatalf("output=%q want=%q", got, want)
+	}
+}
+
 func TestDefaultOperationShowsHelpWhenConfigMissing(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	var out strings.Builder

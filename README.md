@@ -22,6 +22,7 @@ gh hush             # preview; prompt with default No when fully interactive
 gh hush --dry-run   # preview only
 gh hush --confirm   # preview and apply without prompting
 gh hush --debug     # add request/workflow diagnostics on stderr
+gh hush --version   # print the installed release version
 ```
 
 A no-flag invocation is preview-only unless stdin, preview output, and prompt output are all interactive terminals. Redirected or piped execution requires `--confirm` to mutate GitHub. `--dry-run` and `--confirm` are mutually exclusive.
