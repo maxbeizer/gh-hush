@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
@@ -26,79 +27,122 @@ var hushableSubjectTypes = map[string]struct{}{
 	"Issue": {}, "PullRequest": {}, "Discussion": {}, "Commit": {}, "Release": {}, "CheckSuite": {},
 }
 
-func IsHushableSubjectType(subjectType string) bool {
+// EvidenceSource is the single boundary between policy evaluation and GitHub.
+// Evaluator decides which evidence is necessary; implementations only acquire
+// the requested GitHub resource without interpreting policy.
+type EvidenceSource interface {
+	FetchSubject(context.Context, model.Notification) (model.Resource, error)
+	FetchDiscussionComments(context.Context, model.Notification) ([]model.Resource, error)
+}
+
+// Evaluator owns evidence selection and acquisition, safety handling, keep
+// rules, the explicit hush allowlist, and production of the final decision.
+type Evaluator struct {
+	cfg    config.Config
+	source EvidenceSource
+}
+
+func NewEvaluator(cfg config.Config, source EvidenceSource) *Evaluator {
+	return &Evaluator{cfg: cfg, source: source}
+}
+
+// Evaluate produces the complete policy decision for a notification.
+func (e *Evaluator) Evaluate(ctx context.Context, thread model.Notification) model.Decision {
+	requirements := e.evidenceRequirements(thread)
+	var evidence evaluationEvidence
+	if requirements.subject {
+		evidence.subject, evidence.subjectErr = e.source.FetchSubject(ctx, thread)
+	}
+	if requirements.discussionComments {
+		evidence.discussionComments, evidence.discussionCommentsErr = e.source.FetchDiscussionComments(ctx, thread)
+	}
+	return e.decide(thread, requirements, evidence)
+}
+
+type evidenceRequirements struct {
+	subject            bool
+	discussionComments bool
+}
+
+type evaluationEvidence struct {
+	subject               model.Resource
+	discussionComments    []model.Resource
+	subjectErr            error
+	discussionCommentsErr error
+}
+
+func isHushableSubjectType(subjectType string) bool {
 	_, ok := hushableSubjectTypes[subjectType]
 	return ok
 }
 
-func EnrichmentRequirements(cfg config.Config, thread model.Notification) model.EnrichmentRequirements {
-	if !IsHushableSubjectType(thread.Subject.Type) {
-		return model.EnrichmentRequirements{}
+func (e *Evaluator) evidenceRequirements(thread model.Notification) evidenceRequirements {
+	if !isHushableSubjectType(thread.Subject.Type) {
+		return evidenceRequirements{}
 	}
 	repositoryOrg := strings.SplitN(thread.Repository.FullName, "/", 2)[0]
-	if (config.Enabled(cfg.Keep.ExternalOrganizationIssues) && !strings.EqualFold(repositoryOrg, cfg.GitHubOrganization)) ||
-		(config.Enabled(cfg.Keep.PersonallyMentioned) && thread.Reason == "mention") ||
-		(config.Enabled(cfg.Keep.PersonallyAssigned) && thread.Reason == "assign") ||
-		(config.Enabled(cfg.Keep.AuthoredByUser) && thread.Reason == "author") {
+	if (config.Enabled(e.cfg.Keep.ExternalOrganizationIssues) && !strings.EqualFold(repositoryOrg, e.cfg.GitHubOrganization)) ||
+		(config.Enabled(e.cfg.Keep.PersonallyMentioned) && thread.Reason == "mention") ||
+		(config.Enabled(e.cfg.Keep.PersonallyAssigned) && thread.Reason == "assign") ||
+		(config.Enabled(e.cfg.Keep.AuthoredByUser) && thread.Reason == "author") {
 		// The action is already conclusively Keep; no API evidence is required.
-		return model.EnrichmentRequirements{}
+		return evidenceRequirements{}
 	}
-	r := model.EnrichmentRequirements{}
+	var requirements evidenceRequirements
 	t := thread.Subject.Type
-	if config.Enabled(cfg.Keep.PersonallyAssigned) && thread.Reason != "assign" && (t == "Issue" || t == "PullRequest") {
-		r.Subject = true
+	if config.Enabled(e.cfg.Keep.PersonallyAssigned) && thread.Reason != "assign" && (t == "Issue" || t == "PullRequest") {
+		requirements.subject = true
 	}
-	if config.Enabled(cfg.Keep.IndividuallyReviewRequested) && t == "PullRequest" {
-		r.Subject = true
+	if config.Enabled(e.cfg.Keep.IndividuallyReviewRequested) && t == "PullRequest" {
+		requirements.subject = true
 	}
-	if config.Enabled(cfg.Keep.AuthoredByUser) && thread.Reason != "author" {
-		r.Subject = true
+	if config.Enabled(e.cfg.Keep.AuthoredByUser) && thread.Reason != "author" {
+		requirements.subject = true
 	}
-	if config.Enabled(cfg.Keep.TeamMentionedDiscussions) && len(cfg.DiscussionTeamSlugs) > 0 && t == "Discussion" {
-		r.Subject = true
-		r.DiscussionComments = true
+	if config.Enabled(e.cfg.Keep.TeamMentionedDiscussions) && len(e.cfg.DiscussionTeamSlugs) > 0 && t == "Discussion" {
+		requirements.subject = true
+		requirements.discussionComments = true
 	}
-	return r
+	return requirements
 }
 
-func Classify(cfg config.Config, thread model.Notification, enrichment model.Enrichment) model.Decision {
-	decision := model.Decision{Thread: thread, URL: notificationURL(thread, enrichment)}
+func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequirements, evidence evaluationEvidence) model.Decision {
+	decision := model.Decision{Thread: thread, URL: notificationURL(thread, evidence)}
 	repositoryOrg := strings.SplitN(thread.Repository.FullName, "/", 2)[0]
-	if config.Enabled(cfg.Keep.ExternalOrganizationIssues) && !strings.EqualFold(repositoryOrg, cfg.GitHubOrganization) {
-		decision.Rules = append(decision.Rules, model.Rule{ID: ruleExternalOrganization, Evidence: fmt.Sprintf("repository organization %q differs from configured organization %q", repositoryOrg, cfg.GitHubOrganization)})
+	if config.Enabled(e.cfg.Keep.ExternalOrganizationIssues) && !strings.EqualFold(repositoryOrg, e.cfg.GitHubOrganization) {
+		decision.Rules = append(decision.Rules, model.Rule{ID: ruleExternalOrganization, Evidence: fmt.Sprintf("repository organization %q differs from configured organization %q", repositoryOrg, e.cfg.GitHubOrganization)})
 	}
-	if config.Enabled(cfg.Keep.PersonallyMentioned) && thread.Reason == "mention" {
+	if config.Enabled(e.cfg.Keep.PersonallyMentioned) && thread.Reason == "mention" {
 		decision.Rules = append(decision.Rules, model.Rule{ID: rulePersonalMention, Evidence: `GitHub notification reason is "mention"`})
 	}
-	if config.Enabled(cfg.Keep.PersonallyAssigned) && (thread.Reason == "assign" || containsUser(enrichment.Subject.Assignees, cfg.User)) {
-		decision.Rules = append(decision.Rules, model.Rule{ID: rulePersonalAssign, Evidence: fmt.Sprintf("%q is personally assigned", cfg.User)})
+	if config.Enabled(e.cfg.Keep.PersonallyAssigned) && (thread.Reason == "assign" || containsUser(evidence.subject.Assignees, e.cfg.User)) {
+		decision.Rules = append(decision.Rules, model.Rule{ID: rulePersonalAssign, Evidence: fmt.Sprintf("%q is personally assigned", e.cfg.User)})
 	}
-	if config.Enabled(cfg.Keep.IndividuallyReviewRequested) && containsUser(enrichment.Subject.RequestedReviewers, cfg.User) {
-		decision.Rules = append(decision.Rules, model.Rule{ID: ruleIndividualReview, Evidence: fmt.Sprintf("%q appears in requested_reviewers; team requests alone do not match", cfg.User)})
+	if config.Enabled(e.cfg.Keep.IndividuallyReviewRequested) && containsUser(evidence.subject.RequestedReviewers, e.cfg.User) {
+		decision.Rules = append(decision.Rules, model.Rule{ID: ruleIndividualReview, Evidence: fmt.Sprintf("%q appears in requested_reviewers; team requests alone do not match", e.cfg.User)})
 	}
-	if config.Enabled(cfg.Keep.AuthoredByUser) && (thread.Reason == "author" || strings.EqualFold(resourceAuthor(enrichment.Subject), cfg.User)) {
-		decision.Rules = append(decision.Rules, model.Rule{ID: ruleUserAuthored, Evidence: fmt.Sprintf("%q authored the notification subject", cfg.User)})
+	if config.Enabled(e.cfg.Keep.AuthoredByUser) && (thread.Reason == "author" || strings.EqualFold(resourceAuthor(evidence.subject), e.cfg.User)) {
+		decision.Rules = append(decision.Rules, model.Rule{ID: ruleUserAuthored, Evidence: fmt.Sprintf("%q authored the notification subject", e.cfg.User)})
 	}
-	if config.Enabled(cfg.Keep.TeamMentionedDiscussions) && thread.Subject.Type == "Discussion" {
-		bodies := []string{enrichment.Subject.Body}
-		for _, comment := range enrichment.DiscussionComments {
+	if config.Enabled(e.cfg.Keep.TeamMentionedDiscussions) && thread.Subject.Type == "Discussion" {
+		bodies := []string{evidence.subject.Body}
+		for _, comment := range evidence.discussionComments {
 			bodies = append(bodies, comment.Body)
 		}
-		for _, team := range matchingTeamMentions(cfg.DiscussionTeamSlugs, bodies...) {
+		for _, team := range matchingTeamMentions(e.cfg.DiscussionTeamSlugs, bodies...) {
 			decision.Rules = append(decision.Rules, model.Rule{ID: ruleDiscussionTeam, Evidence: fmt.Sprintf("discussion body or complete comment history contains exact team mention @%s", team)})
 		}
 	}
-	if !IsHushableSubjectType(thread.Subject.Type) {
+	if !isHushableSubjectType(thread.Subject.Type) {
 		decision.Rules = append(decision.Rules, model.Rule{ID: ruleSafetyUnsupported, Evidence: fmt.Sprintf("subject type %q is not in the explicit hush allowlist", thread.Subject.Type)})
 	}
 
-	requirements := EnrichmentRequirements(cfg, thread)
 	var evidenceErrors []error
-	if requirements.Subject && enrichment.SubjectErr != nil {
-		evidenceErrors = append(evidenceErrors, enrichment.SubjectErr)
+	if requirements.subject && evidence.subjectErr != nil {
+		evidenceErrors = append(evidenceErrors, evidence.subjectErr)
 	}
-	if requirements.DiscussionComments && enrichment.DiscussionCommentsErr != nil {
-		evidenceErrors = append(evidenceErrors, enrichment.DiscussionCommentsErr)
+	if requirements.discussionComments && evidence.discussionCommentsErr != nil {
+		evidenceErrors = append(evidenceErrors, evidence.discussionCommentsErr)
 	}
 	if evidenceErr := errors.Join(evidenceErrors...); evidenceErr != nil {
 		decision.EnrichmentError = evidenceErr.Error()
@@ -145,9 +189,9 @@ func matchingTeamMentions(teams []string, bodies ...string) []string {
 	return matches
 }
 
-func notificationURL(thread model.Notification, enrichment model.Enrichment) string {
-	if enrichment.Subject.HTMLURL != "" {
-		return enrichment.Subject.HTMLURL
+func notificationURL(thread model.Notification, evidence evaluationEvidence) string {
+	if evidence.subject.HTMLURL != "" {
+		return evidence.subject.HTMLURL
 	}
 	if thread.Subject.URL != "" {
 		return thread.Subject.URL

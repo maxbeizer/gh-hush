@@ -15,6 +15,7 @@ import (
 	"github.com/maxbeizer/gh-hush/internal/config"
 	"github.com/maxbeizer/gh-hush/internal/diagnostic"
 	"github.com/maxbeizer/gh-hush/internal/model"
+	"github.com/maxbeizer/gh-hush/internal/policy"
 	"github.com/spf13/cobra"
 )
 
@@ -125,7 +126,7 @@ func TestApplyHushActionsSuccessAndEndpointOrdering(t *testing.T) {
 	item := notification("1", "subscribed")
 	client := &fakeClient{}
 	var progress strings.Builder
-	err := applyHushActions(context.Background(), &progress, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}})
+	err := applyHushActions(context.Background(), &progress, policy.NewEvaluator(testConfig(), client), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,12 +144,12 @@ func TestApplyDoesNotMarkDoneAfterUnsubscribeFailureAndContinues(t *testing.T) {
 	first, second := notification("1", "subscribed"), notification("2", "subscribed")
 	client := &fakeClient{unsubscribeFailures: map[string]error{"1": errors.New("request exhausted 3 attempts")}}
 	var progress strings.Builder
-	err := applyHushActions(context.Background(), &progress, testConfig(), client, []model.Decision{{Thread: first, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}, {Thread: second, Action: model.ActionUnsubscribeAndMarkDone, URL: "two"}})
+	err := applyHushActions(context.Background(), &progress, policy.NewEvaluator(testConfig(), client), client, []model.Decision{{Thread: first, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}, {Thread: second, Action: model.ActionUnsubscribeAndMarkDone, URL: "two"}})
 	if err == nil || !strings.Contains(err.Error(), "exhausted 3 attempts") {
 		t.Fatalf("err=%v", err)
 	}
-	requireOperations(t, client, "1", "get,enrich,unsubscribe")
-	requireOperations(t, client, "2", "get,enrich,unsubscribe,done")
+	requireOperations(t, client, "1", "get,unsubscribe")
+	requireOperations(t, client, "2", "get,unsubscribe,done")
 	if !strings.Contains(progress.String(), "unsubscribe_failed=1") || !strings.Contains(progress.String(), "done_succeeded=1") {
 		t.Fatalf("summary=%s", progress.String())
 	}
@@ -158,15 +159,15 @@ func TestApplyContinuesAfterDoneRetryExhaustion(t *testing.T) {
 	first, second := notification("1", "subscribed"), notification("2", "subscribed")
 	client := &fakeClient{doneFailures: map[string]error{"1": errors.New("request exhausted 3 attempts")}}
 	var out strings.Builder
-	err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{
+	err := applyHushActions(context.Background(), &out, policy.NewEvaluator(testConfig(), client), client, []model.Decision{
 		{Thread: first, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"},
 		{Thread: second, Action: model.ActionUnsubscribeAndMarkDone, URL: "two"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "Done failed") || !strings.Contains(err.Error(), "exhausted 3 attempts") {
 		t.Fatalf("err=%v", err)
 	}
-	requireOperations(t, client, "1", "get,enrich,unsubscribe,done")
-	requireOperations(t, client, "2", "get,enrich,unsubscribe,done")
+	requireOperations(t, client, "1", "get,unsubscribe,done")
+	requireOperations(t, client, "2", "get,unsubscribe,done")
 	if !strings.Contains(out.String(), "done_failed=1") || !strings.Contains(out.String(), "done_succeeded=1") {
 		t.Fatalf("summary=%s", out.String())
 	}
@@ -177,7 +178,7 @@ func TestApplyReportsDoneFailureAndDoesNotVerifyThreadDisappearance(t *testing.T
 		item := notification("1", "subscribed")
 		client := &fakeClient{doneFailures: map[string]error{"1": errors.New("done failed")}}
 		var out strings.Builder
-		err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}})
+		err := applyHushActions(context.Background(), &out, policy.NewEvaluator(testConfig(), client), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}})
 		if err == nil || !strings.Contains(err.Error(), "unsubscribe succeeded but Done failed") || !strings.Contains(out.String(), "done_failed=1") {
 			t.Fatalf("err=%v out=%s", err, out.String())
 		}
@@ -188,10 +189,10 @@ func TestApplyReportsDoneFailureAndDoesNotVerifyThreadDisappearance(t *testing.T
 		// Done. The operation must end after GitHub accepts MarkThreadDone.
 		client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{thread: item, found: true}, {thread: item, found: true}}}}
 		var out strings.Builder
-		if err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
+		if err := applyHushActions(context.Background(), &out, policy.NewEvaluator(testConfig(), client), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
 			t.Fatal(err)
 		}
-		requireOperations(t, client, "1", "get,enrich,unsubscribe,done")
+		requireOperations(t, client, "1", "get,unsubscribe,done")
 		if !strings.Contains(out.String(), "done_succeeded=1") || strings.Contains(out.String(), "verification") {
 			t.Fatalf("out=%s", out.String())
 		}
@@ -200,20 +201,20 @@ func TestApplyReportsDoneFailureAndDoesNotVerifyThreadDisappearance(t *testing.T
 
 func TestApplyRevalidationEvidenceFailureReturnsErrorAndContinues(t *testing.T) {
 	first, second := notification("1", "subscribed"), notification("2", "subscribed")
-	client := &fakeClient{enrichments: map[string]model.Enrichment{"1": {SubjectErr: errors.New("request exhausted 3 attempts")}}}
+	client := &fakeClient{subjectFailures: map[string]error{"1": errors.New("request exhausted 3 attempts")}}
 	cfg := testConfig()
 	on := true
 	cfg.Keep.PersonallyAssigned = &on
 	var out strings.Builder
-	err := applyHushActions(context.Background(), &out, cfg, client, []model.Decision{
+	err := applyHushActions(context.Background(), &out, policy.NewEvaluator(cfg, client), client, []model.Decision{
 		{Thread: first, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"},
 		{Thread: second, Action: model.ActionUnsubscribeAndMarkDone, URL: "two"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "revalidation evidence fetch failed") || !strings.Contains(err.Error(), "exhausted 3 attempts") {
 		t.Fatalf("err=%v", err)
 	}
-	requireOperations(t, client, "1", "get,enrich")
-	requireOperations(t, client, "2", "get,enrich,unsubscribe,done")
+	requireOperations(t, client, "1", "get,subject")
+	requireOperations(t, client, "2", "get,subject,unsubscribe,done")
 	if !strings.Contains(out.String(), "revalidation_failed=1") || !strings.Contains(out.String(), "done_succeeded=1") {
 		t.Fatalf("summary=%s", out.String())
 	}
@@ -224,7 +225,7 @@ func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.
 		item := notification("1", "subscribed")
 		client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{found: false}}}}
 		var out strings.Builder
-		if err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
+		if err := applyHushActions(context.Background(), &out, policy.NewEvaluator(testConfig(), client), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
 			t.Fatal(err)
 		}
 		if len(client.calls) != 0 || !strings.Contains(out.String(), "missing=1") {
@@ -237,7 +238,7 @@ func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.
 		readRecord.Unread = false
 		client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{thread: readRecord, found: true}}}}
 		var out strings.Builder
-		if err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
+		if err := applyHushActions(context.Background(), &out, policy.NewEvaluator(testConfig(), client), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
 			t.Fatal(err)
 		}
 		requireOperations(t, client, "1", "get")
@@ -250,7 +251,7 @@ func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.
 		fresh := notification("1", "mention")
 		client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{thread: fresh, found: true}}}}
 		var out strings.Builder
-		if err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: preview, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
+		if err := applyHushActions(context.Background(), &out, policy.NewEvaluator(testConfig(), client), client, []model.Decision{{Thread: preview, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
 			t.Fatal(err)
 		}
 		if len(client.calls) != 0 || !strings.Contains(out.String(), "protected=1") || !strings.Contains(out.String(), "keep.personal_mention") {
@@ -264,7 +265,7 @@ func TestApplyWithNoTargetsReportsEmptyProgressAndSummary(t *testing.T) {
 	var out strings.Builder
 	client := &fakeClient{}
 
-	if err := applyHushActions(context.Background(), &out, testConfig(), client, []model.Decision{
+	if err := applyHushActions(context.Background(), &out, policy.NewEvaluator(testConfig(), client), client, []model.Decision{
 		{Thread: notification("1", "mention"), Action: model.ActionKeep, URL: "one"},
 	}); err != nil {
 		t.Fatal(err)
@@ -285,7 +286,7 @@ func TestApplyInteractiveProgressFinishesBeforeDurableDiagnostics(t *testing.T) 
 	client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{found: false}}}}
 	var out strings.Builder
 
-	if err := applyHushActionsWithProgressMode(context.Background(), &out, testConfig(), client, []model.Decision{
+	if err := applyHushActionsWithProgressMode(context.Background(), &out, policy.NewEvaluator(testConfig(), client), client, []model.Decision{
 		{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"},
 	}, true); err != nil {
 		t.Fatal(err)
@@ -313,7 +314,7 @@ func TestApplyUsesBoundedConcurrencyAndPreservesPerThreadOrdering(t *testing.T) 
 	client := newBlockingClient(targetCount)
 	done := make(chan error, 1)
 	go func() {
-		done <- applyHushActions(context.Background(), io.Discard, testConfig(), client, hushDecisions(targetCount))
+		done <- applyHushActions(context.Background(), io.Discard, policy.NewEvaluator(testConfig(), client), client, hushDecisions(targetCount))
 	}()
 
 	for range applyMaxWorkers {
@@ -336,7 +337,7 @@ func TestApplyUsesBoundedConcurrencyAndPreservesPerThreadOrdering(t *testing.T) 
 		t.Fatalf("maximum active=%d want=%d", client.maximumActive(), applyMaxWorkers)
 	}
 	for index := 1; index <= targetCount; index++ {
-		requireOperations(t, &client.fakeClient, fmt.Sprint(index), "get,enrich,unsubscribe,done")
+		requireOperations(t, &client.fakeClient, fmt.Sprint(index), "get,unsubscribe,done")
 	}
 }
 
@@ -346,7 +347,7 @@ func TestApplyCancellationStopsFurtherScheduling(t *testing.T) {
 	var out strings.Builder
 	done := make(chan error, 1)
 	go func() {
-		done <- applyHushActions(ctx, &out, testConfig(), client, hushDecisions(20))
+		done <- applyHushActions(ctx, &out, policy.NewEvaluator(testConfig(), client), client, hushDecisions(20))
 	}()
 	for range applyMaxWorkers {
 		select {
@@ -378,7 +379,7 @@ func TestApplyCancellationAfterAllTargetsScheduledStillReportsStopped(t *testing
 	var out strings.Builder
 	done := make(chan error, 1)
 	go func() {
-		done <- applyHushActions(ctx, &out, testConfig(), client, hushDecisions(2))
+		done <- applyHushActions(ctx, &out, policy.NewEvaluator(testConfig(), client), client, hushDecisions(2))
 	}()
 	for range 2 {
 		select {
@@ -402,8 +403,9 @@ func TestApplyWithPreCancelledContextDoesNotWaitForResults(t *testing.T) {
 	cancel()
 	var out strings.Builder
 	done := make(chan error, 1)
+	client := &fakeClient{}
 	go func() {
-		done <- applyHushActions(ctx, &out, testConfig(), &fakeClient{}, hushDecisions(2))
+		done <- applyHushActions(ctx, &out, policy.NewEvaluator(testConfig(), client), client, hushDecisions(2))
 	}()
 	select {
 	case err := <-done:
@@ -424,7 +426,7 @@ func TestApplyAggregatesFailuresInTargetOrder(t *testing.T) {
 		"2": errors.New("failure-two"),
 	}}
 	var out strings.Builder
-	err := applyHushActions(context.Background(), &out, testConfig(), client, hushDecisions(2))
+	err := applyHushActions(context.Background(), &out, policy.NewEvaluator(testConfig(), client), client, hushDecisions(2))
 	if err == nil {
 		t.Fatal("expected aggregate error")
 	}
@@ -440,7 +442,7 @@ func TestApplyAggregatesFailuresInTargetOrder(t *testing.T) {
 func TestClassifyNotificationsPreservesOrder(t *testing.T) {
 	items := []model.Notification{notification("1", "subscribed"), notification("2", "mention")}
 	var out strings.Builder
-	got := classifyNotifications(context.Background(), &out, testConfig(), &fakeClient{}, items)
+	got := classifyNotifications(context.Background(), &out, policy.NewEvaluator(testConfig(), &fakeClient{}), items)
 	if got[0].Thread.ID != "1" || got[1].Thread.ID != "2" || !strings.Contains(out.String(), "unread notifications") {
 		t.Fatalf("got=%#v out=%s", got, out.String())
 	}
@@ -453,8 +455,8 @@ func TestDebugWorkflowEventsCoverClassificationAndApply(t *testing.T) {
 	item := notification("thread-1", "subscribed")
 	client := &fakeClient{}
 
-	decisions := classifyNotifications(ctx, logger, testConfig(), client, []model.Notification{item})
-	if err := applyHushActions(ctx, logger, testConfig(), client, decisions); err != nil {
+	decisions := classifyNotifications(ctx, logger, policy.NewEvaluator(testConfig(), client), []model.Notification{item})
+	if err := applyHushActions(ctx, logger, policy.NewEvaluator(testConfig(), client), client, decisions); err != nil {
 		t.Fatal(err)
 	}
 	got := output.String()
@@ -482,7 +484,10 @@ type fakeClient struct {
 	operations          map[string][]string
 	getResults          map[string][]fakeGetResult
 	getIndexes          map[string]int
-	enrichments         map[string]model.Enrichment
+	subjects            map[string]model.Resource
+	subjectFailures     map[string]error
+	comments            map[string][]model.Resource
+	commentFailures     map[string]error
 	unsubscribeFailures map[string]error
 	doneFailures        map[string]error
 }
@@ -514,11 +519,17 @@ func (f *fakeClient) GetNotification(ctx context.Context, id string) (model.Noti
 	}
 	return model.Notification{}, false, nil
 }
-func (f *fakeClient) Enrich(_ context.Context, thread model.Notification, _ model.EnrichmentRequirements) model.Enrichment {
+func (f *fakeClient) FetchSubject(_ context.Context, thread model.Notification) (model.Resource, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.recordOperationLocked(thread.ID, "enrich")
-	return f.enrichments[thread.ID]
+	f.recordOperationLocked(thread.ID, "subject")
+	return f.subjects[thread.ID], f.subjectFailures[thread.ID]
+}
+func (f *fakeClient) FetchDiscussionComments(_ context.Context, thread model.Notification) ([]model.Resource, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordOperationLocked(thread.ID, "discussion_comments")
+	return f.comments[thread.ID], f.commentFailures[thread.ID]
 }
 func (f *fakeClient) UnsubscribeThread(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
@@ -681,7 +692,7 @@ func TestApplySummaryReportsAggregateElapsed(t *testing.T) {
 	setClock(t, time.Unix(0, 0), time.Unix(0, 0).Add(3*time.Second))
 	client := &fakeClient{}
 	var out strings.Builder
-	if err := applyHushActions(context.Background(), &out, testConfig(), client, hushDecisions(1)); err != nil {
+	if err := applyHushActions(context.Background(), &out, policy.NewEvaluator(testConfig(), client), client, hushDecisions(1)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "elapsed=3.0s") || !strings.Contains(out.String(), "done_succeeded=1") {
@@ -692,7 +703,7 @@ func TestApplySummaryReportsAggregateElapsed(t *testing.T) {
 func TestClassifyReportsElapsed(t *testing.T) {
 	setClock(t, time.Unix(0, 0), time.Unix(0, 0).Add(1200*time.Millisecond))
 	var out strings.Builder
-	classifyNotifications(context.Background(), &out, testConfig(), &fakeClient{}, []model.Notification{notification("1", "subscribed"), notification("2", "mention")})
+	classifyNotifications(context.Background(), &out, policy.NewEvaluator(testConfig(), &fakeClient{}), []model.Notification{notification("1", "subscribed"), notification("2", "mention")})
 	if !strings.Contains(out.String(), "classified 2/2 notifications in 1.2s") {
 		t.Fatalf("classification timing missing: %q", out.String())
 	}

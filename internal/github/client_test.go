@@ -900,7 +900,7 @@ func TestMutationRetryExhaustionUsesThreeAttempts(t *testing.T) {
 	}
 }
 
-func TestEnrichFetchesCompletePaginatedDiscussionHistory(t *testing.T) {
+func TestEvidenceAdapterFetchesSubjectAndCompletePaginatedDiscussionHistory(t *testing.T) {
 	var server *httptest.Server
 	var mu sync.Mutex
 	var paths []string
@@ -921,12 +921,13 @@ func TestEnrichFetchesCompletePaginatedDiscussionHistory(t *testing.T) {
 	defer server.Close()
 	client := testClient(server)
 	item := model.Notification{Subject: model.Subject{Type: "Discussion", URL: server.URL + "/repos/github/repo/discussions/7"}}
-	e := client.Enrich(context.Background(), item, model.EnrichmentRequirements{Subject: true, DiscussionComments: true})
-	if e.SubjectErr != nil || e.DiscussionCommentsErr != nil || len(e.DiscussionComments) != 2 {
-		t.Fatalf("enrichment=%+v", e)
+	subject, subjectErr := client.FetchSubject(context.Background(), item)
+	comments, commentsErr := client.FetchDiscussionComments(context.Background(), item)
+	if subjectErr != nil || commentsErr != nil || subject.Body != "discussion" || len(comments) != 2 {
+		t.Fatalf("subject=%+v subjectErr=%v comments=%+v commentsErr=%v", subject, subjectErr, comments, commentsErr)
 	}
-	if e.DiscussionComments[1].Body != "historical @github/notifications" {
-		t.Fatalf("comments=%+v", e.DiscussionComments)
+	if comments[1].Body != "historical @github/notifications" {
+		t.Fatalf("comments=%+v", comments)
 	}
 	wantPaths := []string{
 		"/repos/github/repo/discussions/7",
@@ -938,7 +939,7 @@ func TestEnrichFetchesCompletePaginatedDiscussionHistory(t *testing.T) {
 	}
 }
 
-func TestEnrichFailureIsFieldSpecific(t *testing.T) {
+func TestEvidenceAdapterReportsEachFieldFailureIndependently(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "comments") {
 			http.Error(w, "bad", http.StatusForbidden)
@@ -948,8 +949,10 @@ func TestEnrichFailureIsFieldSpecific(t *testing.T) {
 	}))
 	defer server.Close()
 	item := model.Notification{Subject: model.Subject{URL: server.URL + "/discussion"}}
-	e := testClient(server).Enrich(context.Background(), item, model.EnrichmentRequirements{Subject: true, DiscussionComments: true})
-	if e.SubjectErr != nil || e.DiscussionCommentsErr == nil {
-		t.Fatalf("enrichment=%+v", e)
+	client := testClient(server)
+	subject, subjectErr := client.FetchSubject(context.Background(), item)
+	_, commentsErr := client.FetchDiscussionComments(context.Background(), item)
+	if subjectErr != nil || subject.Body != "ok" || commentsErr == nil {
+		t.Fatalf("subject=%+v subjectErr=%v commentsErr=%v", subject, subjectErr, commentsErr)
 	}
 }

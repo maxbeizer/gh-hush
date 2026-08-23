@@ -100,7 +100,8 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 	}
 	diagnostic.Log(listCtx, "operation_complete", diagnostic.String("operation", "list_notifications"), diagnostic.Int("count", len(threads)))
 	_, _ = fmt.Fprintf(stderr, "authenticated and listed %d unread %s in %s\n", len(threads), notificationWord(len(threads)), formatDuration(now().Sub(inboxStart)))
-	decisions := classifyNotifications(ctx, stderr, cfg, client, threads)
+	evaluator := policy.NewEvaluator(cfg, client)
+	decisions := classifyNotifications(ctx, stderr, evaluator, threads)
 	reportCtx := diagnostic.WithPhase(ctx, "report")
 	reportStart := now()
 	if err := report.Write(stdout, decisions); err != nil {
@@ -132,17 +133,12 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 			return nil
 		}
 	}
-	err = applyHushActions(ctx, stderr, cfg, client, decisions)
+	err = applyHushActions(ctx, stderr, evaluator, client, decisions)
 	printTotalRuntime()
 	return err
 }
 
-type notificationEnricher interface {
-	Enrich(context.Context, model.Notification, model.EnrichmentRequirements) model.Enrichment
-}
 type notificationClient interface {
-	notificationEnricher
-	ListNotifications(context.Context) ([]model.Notification, error)
 	GetNotification(context.Context, string) (model.Notification, bool, error)
 	UnsubscribeThread(context.Context, string) error
 	MarkThreadDone(context.Context, string) error
@@ -198,11 +194,11 @@ type applicationResult struct {
 	failure  error
 }
 
-func applyHushActions(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationClient, decisions []model.Decision) error {
-	return applyHushActionsWithProgressMode(ctx, stderr, cfg, client, decisions, isTerminal(stderr))
+func applyHushActions(ctx context.Context, stderr io.Writer, evaluator *policy.Evaluator, client notificationClient, decisions []model.Decision) error {
+	return applyHushActionsWithProgressMode(ctx, stderr, evaluator, client, decisions, isTerminal(stderr))
 }
 
-func applyHushActionsWithProgressMode(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationClient, decisions []model.Decision, interactive bool) error {
+func applyHushActionsWithProgressMode(ctx context.Context, stderr io.Writer, evaluator *policy.Evaluator, client notificationClient, decisions []model.Decision, interactive bool) error {
 	ctx = diagnostic.WithPhase(ctx, "apply")
 	applyStart := now()
 	if diagnostic.Enabled(ctx) {
@@ -239,7 +235,7 @@ func applyHushActionsWithProgressMode(ctx context.Context, stderr io.Writer, cfg
 					results <- applicationResult{index: work.index, failure: err}
 					continue
 				}
-				result := applyHushAction(workCtx, cfg, client, work.preview)
+				result := applyHushAction(workCtx, evaluator, client, work.preview)
 				result.index = work.index
 				if errors.Is(result.failure, context.Canceled) || errors.Is(result.failure, context.DeadlineExceeded) {
 					diagnostic.Log(workCtx, "worker_cancelled")
@@ -307,7 +303,7 @@ func applyHushActionsWithProgressMode(ctx context.Context, stderr io.Writer, cfg
 	return nil
 }
 
-func applyHushAction(ctx context.Context, cfg config.Config, client notificationClient, preview model.Decision) applicationResult {
+func applyHushAction(ctx context.Context, evaluator *policy.Evaluator, client notificationClient, preview model.Decision) applicationResult {
 	var result applicationResult
 	current, found, err := client.GetNotification(ctx, preview.Thread.ID)
 	if err != nil {
@@ -328,8 +324,7 @@ func applyHushAction(ctx context.Context, cfg config.Config, client notification
 		result.messages = append(result.messages, fmt.Sprintf("skip %s: target is no longer unread; GitHub's REST API cannot distinguish read inbox entries from Done history", preview.URL))
 		return result
 	}
-	enrichment := client.Enrich(ctx, current, policy.EnrichmentRequirements(cfg, current))
-	fresh := policy.Classify(cfg, current, enrichment)
+	fresh := evaluator.Evaluate(ctx, current)
 	if fresh.EnrichmentError != "" {
 		result.summary.RevalidationFailed++
 		result.failure = fmt.Errorf("%s: revalidation evidence fetch failed: %s", fresh.URL, fresh.EnrichmentError)
@@ -379,7 +374,7 @@ func ruleDescriptions(rules []model.Rule) string {
 	return strings.Join(descriptions, "; ")
 }
 
-func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationEnricher, threads []model.Notification) []model.Decision {
+func classifyNotifications(ctx context.Context, stderr io.Writer, evaluator *policy.Evaluator, threads []model.Notification) []model.Decision {
 	ctx = diagnostic.WithPhase(ctx, "classification")
 	classifyStart := now()
 	progress := newClassificationProgress(stderr, isTerminal(stderr) && !diagnostic.Enabled(ctx))
@@ -404,8 +399,7 @@ func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Con
 				thread := threads[index]
 				workCtx := diagnostic.WithThread(ctx, thread.ID)
 				diagnostic.Log(workCtx, "worker_start")
-				enrichment := client.Enrich(workCtx, thread, policy.EnrichmentRequirements(cfg, thread))
-				decision := policy.Classify(cfg, thread, enrichment)
+				decision := evaluator.Evaluate(workCtx, thread)
 				if workCtx.Err() != nil {
 					diagnostic.Log(workCtx, "worker_cancelled")
 				} else {

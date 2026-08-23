@@ -1,7 +1,9 @@
 package policy
 
 import (
+	"context"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/maxbeizer/gh-hush/internal/config"
@@ -11,9 +13,10 @@ import (
 func TestExternalOrganizationProtectionAppliesToEveryType(t *testing.T) {
 	for _, subjectType := range []string{"Issue", "PullRequest", "Discussion", "Commit", "Release", "CheckSuite", "RepositoryVulnerabilityAlert"} {
 		t.Run(subjectType, func(t *testing.T) {
-			d := Classify(testConfig(), thread("1", "other/repo", subjectType, "subscribed"), model.Enrichment{})
-			if d.Action != model.ActionKeep || d.Rules[0].ID != ruleExternalOrganization {
-				t.Fatalf("decision = %#v", d)
+			source := &testEvidenceSource{}
+			d := NewEvaluator(testConfig(), source).Evaluate(context.Background(), thread("1", "other/repo", subjectType, "subscribed"))
+			if d.Action != model.ActionKeep || d.Rules[0].ID != ruleExternalOrganization || len(source.calls) != 0 {
+				t.Fatalf("decision = %#v, evidence calls = %v", d, source.calls)
 			}
 		})
 	}
@@ -22,7 +25,7 @@ func TestExternalOrganizationProtectionAppliesToEveryType(t *testing.T) {
 func TestExplicitHushAllowlistAndUnsupportedSafetyKeep(t *testing.T) {
 	for _, subjectType := range []string{"Issue", "PullRequest", "Discussion", "Commit", "Release", "CheckSuite"} {
 		t.Run(subjectType, func(t *testing.T) {
-			d := Classify(withEvidenceRulesDisabled(testConfig()), thread("1", "github/repo", subjectType, "subscribed"), model.Enrichment{})
+			d := NewEvaluator(withEvidenceRulesDisabled(testConfig()), &testEvidenceSource{}).Evaluate(context.Background(), thread("1", "github/repo", subjectType, "subscribed"))
 			if d.Action != model.ActionUnsubscribeAndMarkDone || d.Rules[0].ID != ruleAllOther {
 				t.Fatalf("decision = %#v", d)
 			}
@@ -30,9 +33,10 @@ func TestExplicitHushAllowlistAndUnsupportedSafetyKeep(t *testing.T) {
 	}
 	for _, subjectType := range []string{"", "SecurityAlert", "RepositoryInvitation", "UnknownFutureType"} {
 		t.Run("unsupported "+subjectType, func(t *testing.T) {
-			d := Classify(testConfig(), thread("1", "github/repo", subjectType, "subscribed"), model.Enrichment{})
-			if d.Action != model.ActionKeep || d.Rules[len(d.Rules)-1].ID != ruleSafetyUnsupported {
-				t.Fatalf("decision = %#v", d)
+			source := &testEvidenceSource{}
+			d := NewEvaluator(testConfig(), source).Evaluate(context.Background(), thread("1", "github/repo", subjectType, "subscribed"))
+			if d.Action != model.ActionKeep || d.Rules[len(d.Rules)-1].ID != ruleSafetyUnsupported || len(source.calls) != 0 {
+				t.Fatalf("decision = %#v, evidence calls = %v", d, source.calls)
 			}
 		})
 	}
@@ -41,21 +45,21 @@ func TestExplicitHushAllowlistAndUnsupportedSafetyKeep(t *testing.T) {
 func TestKeepRules(t *testing.T) {
 	cfg := testConfig()
 	tests := []struct {
-		name     string
-		item     model.Notification
-		evidence model.Enrichment
-		rule     string
+		name    string
+		item    model.Notification
+		subject model.Resource
+		rule    string
 	}{
-		{"mention", thread("1", "github/repo", "Issue", "mention"), model.Enrichment{}, rulePersonalMention},
-		{"assignment reason", thread("1", "github/repo", "Issue", "assign"), model.Enrichment{}, rulePersonalAssign},
-		{"current assignee", thread("1", "github/repo", "Issue", "subscribed"), model.Enrichment{Subject: model.Resource{Assignees: []model.User{{Login: "octocat"}}}}, rulePersonalAssign},
-		{"individual review", thread("1", "github/repo", "PullRequest", "review_requested"), model.Enrichment{Subject: model.Resource{RequestedReviewers: []model.User{{Login: "octocat"}}}}, ruleIndividualReview},
-		{"author reason", thread("1", "github/repo", "Release", "author"), model.Enrichment{}, ruleUserAuthored},
-		{"author response", thread("1", "github/repo", "Commit", "subscribed"), model.Enrichment{Subject: model.Resource{Author: model.User{Login: "octocat"}}}, ruleUserAuthored},
+		{"mention", thread("1", "github/repo", "Issue", "mention"), model.Resource{}, rulePersonalMention},
+		{"assignment reason", thread("1", "github/repo", "Issue", "assign"), model.Resource{}, rulePersonalAssign},
+		{"current assignee", thread("1", "github/repo", "Issue", "subscribed"), model.Resource{Assignees: []model.User{{Login: "octocat"}}}, rulePersonalAssign},
+		{"individual review", thread("1", "github/repo", "PullRequest", "review_requested"), model.Resource{RequestedReviewers: []model.User{{Login: "octocat"}}}, ruleIndividualReview},
+		{"author reason", thread("1", "github/repo", "Release", "author"), model.Resource{}, ruleUserAuthored},
+		{"author response", thread("1", "github/repo", "Commit", "subscribed"), model.Resource{Author: model.User{Login: "octocat"}}, ruleUserAuthored},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := Classify(cfg, tt.item, tt.evidence)
+			d := NewEvaluator(cfg, &testEvidenceSource{subject: tt.subject}).Evaluate(context.Background(), tt.item)
 			if d.Action != model.ActionKeep || !hasRule(d, tt.rule) {
 				t.Fatalf("decision=%#v", d)
 			}
@@ -65,33 +69,122 @@ func TestKeepRules(t *testing.T) {
 
 func TestDiscussionHistoricalTeamMentionProtectsAndExactMatchIsRequired(t *testing.T) {
 	item := thread("1", "github/repo", "Discussion", "team_mention")
-	d := Classify(testConfig(), item, model.Enrichment{DiscussionComments: []model.Resource{{Body: "old @github/notifications mention"}, {Body: "new comment"}}})
+	d := NewEvaluator(testConfig(), &testEvidenceSource{comments: []model.Resource{{Body: "old @github/notifications mention"}, {Body: "new comment"}}}).Evaluate(context.Background(), item)
 	if d.Action != model.ActionKeep || !hasRule(d, ruleDiscussionTeam) {
 		t.Fatalf("decision=%#v", d)
 	}
-	d = Classify(testConfig(), item, model.Enrichment{DiscussionComments: []model.Resource{{Body: "@github/notifications-extra"}}})
+	d = NewEvaluator(testConfig(), &testEvidenceSource{comments: []model.Resource{{Body: "@github/notifications-extra"}}}).Evaluate(context.Background(), item)
 	if d.Action != model.ActionUnsubscribeAndMarkDone {
 		t.Fatalf("partial mention decision=%#v", d)
 	}
 }
 
-func TestRequiredEnrichmentFailureSafetyKeeps(t *testing.T) {
+func TestRequiredEvidenceFailureSafetyIsFieldSpecific(t *testing.T) {
 	item := thread("1", "github/repo", "Discussion", "subscribed")
-	d := Classify(testConfig(), item, model.Enrichment{DiscussionCommentsErr: errors.New("pages unavailable")})
-	if d.Action != model.ActionKeep || !hasRule(d, ruleSafetyFailure) || d.EnrichmentError == "" {
+	source := &testEvidenceSource{
+		subject:     model.Resource{Body: "available", HTMLURL: "https://github.test/discussion/1"},
+		commentsErr: errors.New("pages unavailable"),
+	}
+	d := NewEvaluator(testConfig(), source).Evaluate(context.Background(), item)
+	if d.Action != model.ActionKeep || !hasRule(d, ruleSafetyFailure) || d.EnrichmentError != "pages unavailable" {
 		t.Fatalf("decision=%#v", d)
+	}
+	if d.URL != source.subject.HTMLURL {
+		t.Fatalf("URL=%q want available subject HTML URL %q", d.URL, source.subject.HTMLURL)
 	}
 }
 
-func TestEnrichmentRequirementsUseCompleteDiscussionHistory(t *testing.T) {
-	r := EnrichmentRequirements(testConfig(), thread("1", "github/repo", "Discussion", "subscribed"))
-	if !r.Subject || !r.DiscussionComments {
-		t.Fatalf("requirements=%+v", r)
+func TestDecisionURLPreservesEvidenceAndNotificationFallbackOrder(t *testing.T) {
+	item := thread("1", "github/repo", "Issue", "subscribed")
+	item.Repository.HTMLURL = "https://github.test/github/repo"
+
+	d := NewEvaluator(testConfig(), &testEvidenceSource{subject: model.Resource{HTMLURL: "https://github.test/github/repo/issues/1"}}).Evaluate(context.Background(), item)
+	if d.URL != "https://github.test/github/repo/issues/1" {
+		t.Fatalf("evidence URL=%q", d.URL)
 	}
-	r = EnrichmentRequirements(testConfig(), thread("1", "github/repo", "Unknown", "subscribed"))
-	if r != (model.EnrichmentRequirements{}) {
-		t.Fatalf("unsupported requirements=%+v", r)
+
+	d = NewEvaluator(testConfig(), &testEvidenceSource{subjectErr: errors.New("subject unavailable")}).Evaluate(context.Background(), item)
+	if d.URL != item.Subject.URL {
+		t.Fatalf("subject API fallback URL=%q want=%q", d.URL, item.Subject.URL)
 	}
+
+	item.Subject.URL = ""
+	d = NewEvaluator(withEvidenceRulesDisabled(testConfig()), &testEvidenceSource{}).Evaluate(context.Background(), item)
+	if d.URL != item.Repository.HTMLURL+"/notifications" {
+		t.Fatalf("repository fallback URL=%q", d.URL)
+	}
+
+	item.Repository.HTMLURL = ""
+	d = NewEvaluator(withEvidenceRulesDisabled(testConfig()), &testEvidenceSource{}).Evaluate(context.Background(), item)
+	if d.URL != "unavailable" {
+		t.Fatalf("terminal fallback URL=%q", d.URL)
+	}
+}
+
+func TestEvaluatorSelectsOnlyNecessaryEvidence(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config.Config
+		item model.Notification
+		want []string
+	}{
+		{"discussion uses complete history", testConfig(), thread("1", "github/repo", "Discussion", "subscribed"), []string{"subject", "discussion_comments"}},
+		{"unsupported uses none", testConfig(), thread("1", "github/repo", "Unknown", "subscribed"), nil},
+		{"conclusive reason uses none", testConfig(), thread("1", "github/repo", "Issue", "mention"), nil},
+		{"evidence rules disabled uses none", withEvidenceRulesDisabled(testConfig()), thread("1", "github/repo", "Issue", "subscribed"), nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			source := &testEvidenceSource{}
+			NewEvaluator(tt.cfg, source).Evaluate(context.Background(), tt.item)
+			if !reflect.DeepEqual(source.calls, tt.want) {
+				t.Fatalf("evidence calls=%v want=%v", source.calls, tt.want)
+			}
+		})
+	}
+}
+
+func TestEvaluatorPassesContextToEvidenceSource(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	source := &testEvidenceSource{checkContext: true}
+	d := NewEvaluator(testConfig(), source).Evaluate(ctx, thread("1", "github/repo", "Issue", "subscribed"))
+	// Decision intentionally retains evidence failures as reportable text.
+	if !errors.Is(source.contextErr, context.Canceled) || d.Action != model.ActionKeep || d.EnrichmentError != context.Canceled.Error() {
+		t.Fatalf("context err=%v decision=%#v", source.contextErr, d)
+	}
+}
+
+type testEvidenceSource struct {
+	subject      model.Resource
+	comments     []model.Resource
+	subjectErr   error
+	commentsErr  error
+	calls        []string
+	checkContext bool
+	contextErr   error
+}
+
+func (s *testEvidenceSource) FetchSubject(ctx context.Context, _ model.Notification) (model.Resource, error) {
+	s.calls = append(s.calls, "subject")
+	if s.checkContext {
+		s.contextErr = ctx.Err()
+		if s.contextErr != nil {
+			return model.Resource{}, s.contextErr
+		}
+	}
+	return s.subject, s.subjectErr
+}
+
+func (s *testEvidenceSource) FetchDiscussionComments(ctx context.Context, _ model.Notification) ([]model.Resource, error) {
+	s.calls = append(s.calls, "discussion_comments")
+	if s.checkContext {
+		s.contextErr = ctx.Err()
+		if s.contextErr != nil {
+			return nil, s.contextErr
+		}
+	}
+	return s.comments, s.commentsErr
 }
 
 func hasRule(d model.Decision, id string) bool {
@@ -102,15 +195,18 @@ func hasRule(d model.Decision, id string) bool {
 	}
 	return false
 }
+
 func thread(id, repo, typ, reason string) model.Notification {
 	return model.Notification{ID: id, Reason: reason, Repository: model.Repository{FullName: repo}, Subject: model.Subject{Type: typ, URL: "https://api.github.test/subject"}}
 }
+
 func testConfig() config.Config {
 	on := true
 	cfg := config.Config{User: "octocat", GitHubOrganization: "github", DiscussionTeamSlugs: []string{"github/notifications"}, Keep: config.Keep{ExternalOrganizationIssues: &on, PersonallyMentioned: &on, PersonallyAssigned: &on, IndividuallyReviewRequested: &on, AuthoredByUser: &on, TeamMentionedDiscussions: &on}}
 	cfg.Hush.AllOtherNotifications = &on
 	return cfg
 }
+
 func withEvidenceRulesDisabled(cfg config.Config) config.Config {
 	off := false
 	cfg.Keep.PersonallyAssigned = &off
