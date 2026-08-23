@@ -13,6 +13,7 @@ import (
 	"github.com/maxbeizer/gh-hush/internal/config"
 	"github.com/maxbeizer/gh-hush/internal/diagnostic"
 	"github.com/maxbeizer/gh-hush/internal/model"
+	"github.com/maxbeizer/gh-hush/internal/policy"
 	"github.com/spf13/cobra"
 )
 
@@ -138,7 +139,7 @@ func TestPromptNamesBothEffectsAndDefaultsNo(t *testing.T) {
 func TestClassifyNotificationsPreservesOrder(t *testing.T) {
 	items := []model.Notification{notification("1", "subscribed"), notification("2", "mention")}
 	var out strings.Builder
-	got := classifyNotifications(context.Background(), &out, testConfig(), &fakeClient{}, items)
+	got := classifyNotifications(context.Background(), &out, policy.NewEvaluator(testConfig(), &fakeClient{}), items)
 	if got[0].Thread.ID != "1" || got[1].Thread.ID != "2" || !strings.Contains(out.String(), "unread notifications") {
 		t.Fatalf("got=%#v out=%s", got, out.String())
 	}
@@ -150,7 +151,7 @@ func TestDebugWorkflowEventsCoverClassification(t *testing.T) {
 	ctx := diagnostic.WithLogger(context.Background(), logger)
 	item := notification("thread-1", "subscribed")
 
-	classifyNotifications(ctx, logger, testConfig(), &fakeClient{}, []model.Notification{item})
+	classifyNotifications(ctx, logger, policy.NewEvaluator(testConfig(), &fakeClient{}), []model.Notification{item})
 	got := output.String()
 	for _, want := range []string{
 		"event=worker_start phase=classification thread_id=thread-1",
@@ -164,8 +165,12 @@ func TestDebugWorkflowEventsCoverClassification(t *testing.T) {
 
 type fakeClient struct{}
 
-func (*fakeClient) Enrich(_ context.Context, _ model.Notification, _ model.EnrichmentRequirements) model.Enrichment {
-	return model.Enrichment{}
+func (*fakeClient) FetchSubject(_ context.Context, _ model.Notification) (model.Resource, error) {
+	return model.Resource{}, nil
+}
+
+func (*fakeClient) FetchDiscussionComments(_ context.Context, _ model.Notification) ([]model.Resource, error) {
+	return nil, nil
 }
 
 func notification(id, reason string) model.Notification {
@@ -222,7 +227,7 @@ func TestFormatDurationPrecision(t *testing.T) {
 func TestClassifyReportsElapsed(t *testing.T) {
 	setClock(t, time.Unix(0, 0), time.Unix(0, 0).Add(1200*time.Millisecond))
 	var out strings.Builder
-	classifyNotifications(context.Background(), &out, testConfig(), &fakeClient{}, []model.Notification{notification("1", "subscribed"), notification("2", "mention")})
+	classifyNotifications(context.Background(), &out, policy.NewEvaluator(testConfig(), &fakeClient{}), []model.Notification{notification("1", "subscribed"), notification("2", "mention")})
 	if !strings.Contains(out.String(), "classified 2/2 notifications in 1.2s") {
 		t.Fatalf("classification timing missing: %q", out.String())
 	}

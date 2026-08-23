@@ -45,8 +45,8 @@ func TestApplyDoesNotMarkDoneAfterUnsubscribeFailureAndContinues(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "exhausted 3 attempts") {
 		t.Fatalf("err=%v", err)
 	}
-	requireOperations(t, client, "1", "get,enrich,unsubscribe")
-	requireOperations(t, client, "2", "get,enrich,unsubscribe,done")
+	requireOperations(t, client, "1", "get,unsubscribe")
+	requireOperations(t, client, "2", "get,unsubscribe,done")
 	if !strings.Contains(progress.String(), "unsubscribe_failed=1") || !strings.Contains(progress.String(), "done_succeeded=1") {
 		t.Fatalf("summary=%s", progress.String())
 	}
@@ -63,8 +63,8 @@ func TestApplyContinuesAfterDoneRetryExhaustion(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Done failed") || !strings.Contains(err.Error(), "exhausted 3 attempts") {
 		t.Fatalf("err=%v", err)
 	}
-	requireOperations(t, client, "1", "get,enrich,unsubscribe,done")
-	requireOperations(t, client, "2", "get,enrich,unsubscribe,done")
+	requireOperations(t, client, "1", "get,unsubscribe,done")
+	requireOperations(t, client, "2", "get,unsubscribe,done")
 	if !strings.Contains(out.String(), "done_failed=1") || !strings.Contains(out.String(), "done_succeeded=1") {
 		t.Fatalf("summary=%s", out.String())
 	}
@@ -89,7 +89,7 @@ func TestApplyReportsDoneFailureAndDoesNotVerifyThreadDisappearance(t *testing.T
 		if err := apply(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
 			t.Fatal(err)
 		}
-		requireOperations(t, client, "1", "get,enrich,unsubscribe,done")
+		requireOperations(t, client, "1", "get,unsubscribe,done")
 		if !strings.Contains(out.String(), "done_succeeded=1") || strings.Contains(out.String(), "verification") {
 			t.Fatalf("out=%s", out.String())
 		}
@@ -98,7 +98,7 @@ func TestApplyReportsDoneFailureAndDoesNotVerifyThreadDisappearance(t *testing.T
 
 func TestApplyRevalidationEvidenceFailureReturnsErrorAndContinues(t *testing.T) {
 	first, second := notification("1", "subscribed"), notification("2", "subscribed")
-	client := &fakeClient{enrichments: map[string]model.Enrichment{"1": {SubjectErr: errors.New("request exhausted 3 attempts")}}}
+	client := &fakeClient{subjectFailures: map[string]error{"1": errors.New("request exhausted 3 attempts")}}
 	cfg := testConfig()
 	on := true
 	cfg.Keep.PersonallyAssigned = &on
@@ -110,8 +110,8 @@ func TestApplyRevalidationEvidenceFailureReturnsErrorAndContinues(t *testing.T) 
 	if err == nil || !strings.Contains(err.Error(), "revalidation evidence fetch failed") || !strings.Contains(err.Error(), "exhausted 3 attempts") {
 		t.Fatalf("err=%v", err)
 	}
-	requireOperations(t, client, "1", "get,enrich")
-	requireOperations(t, client, "2", "get,enrich,unsubscribe,done")
+	requireOperations(t, client, "1", "get,subject")
+	requireOperations(t, client, "2", "get,subject,unsubscribe,done")
 	if !strings.Contains(out.String(), "revalidation_failed=1") || !strings.Contains(out.String(), "done_succeeded=1") {
 		t.Fatalf("summary=%s", out.String())
 	}
@@ -234,7 +234,7 @@ func TestApplyUsesBoundedConcurrencyAndPreservesPerThreadOrdering(t *testing.T) 
 		t.Fatalf("maximum active=%d want=%d", client.maximumActive(), maxWorkers)
 	}
 	for index := 1; index <= targetCount; index++ {
-		requireOperations(t, &client.fakeClient, fmt.Sprint(index), "get,enrich,unsubscribe,done")
+		requireOperations(t, &client.fakeClient, fmt.Sprint(index), "get,unsubscribe,done")
 	}
 }
 
@@ -368,7 +368,10 @@ type fakeClient struct {
 	operations          map[string][]string
 	getResults          map[string][]fakeGetResult
 	getIndexes          map[string]int
-	enrichments         map[string]model.Enrichment
+	subjects            map[string]model.Resource
+	subjectFailures     map[string]error
+	comments            map[string][]model.Resource
+	commentFailures     map[string]error
 	unsubscribeFailures map[string]error
 	doneFailures        map[string]error
 }
@@ -397,11 +400,17 @@ func (f *fakeClient) GetNotification(ctx context.Context, id string) (model.Noti
 	}
 	return model.Notification{}, false, nil
 }
-func (f *fakeClient) Enrich(_ context.Context, thread model.Notification, _ model.EnrichmentRequirements) model.Enrichment {
+func (f *fakeClient) FetchSubject(_ context.Context, thread model.Notification) (model.Resource, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.recordOperationLocked(thread.ID, "enrich")
-	return f.enrichments[thread.ID]
+	f.recordOperationLocked(thread.ID, "subject")
+	return f.subjects[thread.ID], f.subjectFailures[thread.ID]
+}
+func (f *fakeClient) FetchDiscussionComments(_ context.Context, thread model.Notification) ([]model.Resource, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordOperationLocked(thread.ID, "discussion_comments")
+	return f.comments[thread.ID], f.commentFailures[thread.ID]
 }
 func (f *fakeClient) UnsubscribeThread(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {

@@ -45,20 +45,6 @@ type Team struct {
 	Slug string `json:"slug"`
 }
 
-// EnrichmentRequirements identifies evidence needed for one classification.
-type EnrichmentRequirements struct {
-	Subject            bool
-	DiscussionComments bool
-}
-
-// Enrichment contains fresh evidence and field-specific uncertainty.
-type Enrichment struct {
-	Subject               Resource
-	DiscussionComments    []Resource
-	SubjectErr            error
-	DiscussionCommentsErr error
-}
-
 // Action is a proposed notification decision.
 type Action string
 

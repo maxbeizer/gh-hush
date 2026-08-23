@@ -104,7 +104,8 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 	}
 	diagnostic.Log(listCtx, "operation_complete", diagnostic.String("operation", "list_notifications"), diagnostic.Int("count", len(threads)))
 	_, _ = fmt.Fprintf(stderr, "authenticated and listed %d unread %s in %s\n", len(threads), notificationWord(len(threads)), formatDuration(now().Sub(inboxStart)))
-	decisions := classifyNotifications(ctx, stderr, cfg, client, threads)
+	evaluator := policy.NewEvaluator(cfg, client)
+	decisions := classifyNotifications(ctx, stderr, evaluator, threads)
 	reportCtx := diagnostic.WithPhase(ctx, "report")
 	reportStart := now()
 	if err := report.Write(stdout, decisions); err != nil {
@@ -141,10 +142,6 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 	return err
 }
 
-type notificationEnricher interface {
-	Enrich(context.Context, model.Notification, model.EnrichmentRequirements) model.Enrichment
-}
-
 func countHushActions(decisions []model.Decision) int {
 	count := 0
 	for _, decision := range decisions {
@@ -178,7 +175,7 @@ func isTerminal(stream any) bool {
 	return ok && term.IsTerminal(int(file.Fd()))
 }
 
-func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationEnricher, threads []model.Notification) []model.Decision {
+func classifyNotifications(ctx context.Context, stderr io.Writer, evaluator *policy.Evaluator, threads []model.Notification) []model.Decision {
 	ctx = diagnostic.WithPhase(ctx, "classification")
 	classifyStart := now()
 	progress := newClassificationProgress(stderr, isTerminal(stderr) && !diagnostic.Enabled(ctx))
@@ -203,8 +200,7 @@ func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Con
 				thread := threads[index]
 				workCtx := diagnostic.WithThread(ctx, thread.ID)
 				diagnostic.Log(workCtx, "worker_start")
-				enrichment := client.Enrich(workCtx, thread, policy.EnrichmentRequirements(cfg, thread))
-				decision := policy.Classify(cfg, thread, enrichment)
+				decision := evaluator.Evaluate(workCtx, thread)
 				if workCtx.Err() != nil {
 					diagnostic.Log(workCtx, "worker_cancelled")
 				} else {

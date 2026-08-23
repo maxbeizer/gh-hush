@@ -20,7 +20,7 @@ import (
 // workflow. The production GitHub client implements it directly.
 type Client interface {
 	GetNotification(context.Context, string) (model.Notification, bool, error)
-	Enrich(context.Context, model.Notification, model.EnrichmentRequirements) model.Enrichment
+	policy.EvidenceSource
 	UnsubscribeThread(context.Context, string) error
 	MarkThreadDone(context.Context, string) error
 }
@@ -61,6 +61,7 @@ func Apply(ctx context.Context, output io.Writer, cfg config.Config, client Clie
 	}
 
 	total := summary{Targets: len(targets)}
+	evaluator := policy.NewEvaluator(cfg, client)
 	workerCount := min(maxWorkers, len(targets))
 	progress := newProgress(output, interactive)
 	progress.start(len(targets))
@@ -84,7 +85,7 @@ func Apply(ctx context.Context, output io.Writer, cfg config.Config, client Clie
 					results <- result{index: work.index, failure: err}
 					continue
 				}
-				outcome := applyOne(workCtx, cfg, client, work.preview)
+				outcome := applyOne(workCtx, evaluator, client, work.preview)
 				outcome.index = work.index
 				if errors.Is(outcome.failure, context.Canceled) || errors.Is(outcome.failure, context.DeadlineExceeded) {
 					diagnostic.Log(workCtx, "worker_cancelled")
@@ -151,7 +152,7 @@ func Apply(ctx context.Context, output io.Writer, cfg config.Config, client Clie
 	return nil
 }
 
-func applyOne(ctx context.Context, cfg config.Config, client Client, preview model.Decision) result {
+func applyOne(ctx context.Context, evaluator *policy.Evaluator, client Client, preview model.Decision) result {
 	var outcome result
 	current, found, err := client.GetNotification(ctx, preview.Thread.ID)
 	if err != nil {
@@ -171,8 +172,7 @@ func applyOne(ctx context.Context, cfg config.Config, client Client, preview mod
 		outcome.messages = append(outcome.messages, fmt.Sprintf("skip %s: target is no longer unread; GitHub's REST API cannot distinguish read inbox entries from Done history", preview.URL))
 		return outcome
 	}
-	enrichment := client.Enrich(ctx, current, policy.EnrichmentRequirements(cfg, current))
-	fresh := policy.Classify(cfg, current, enrichment)
+	fresh := evaluator.Evaluate(ctx, current)
 	if fresh.EnrichmentError != "" {
 		outcome.summary.RevalidationFailed++
 		outcome.failure = fmt.Errorf("%s: revalidation evidence fetch failed: %s", fresh.URL, fresh.EnrichmentError)
