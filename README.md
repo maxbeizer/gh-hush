@@ -21,6 +21,7 @@ make install-local
 gh hush             # preview; prompt with default No when fully interactive
 gh hush --dry-run   # preview only
 gh hush --confirm   # preview and apply without prompting
+gh hush --debug     # add request/workflow diagnostics on stderr
 ```
 
 A no-flag invocation is preview-only unless stdin, preview output, and prompt output are all interactive terminals. Redirected or piped execution requires `--confirm` to mutate GitHub. `--dry-run` and `--confirm` are mutually exclusive.
@@ -44,6 +45,12 @@ GitHub's individual thread endpoint can return a historical record after the thr
 As a conservative tradeoff, discovery uses GitHub's default unread-only notification listing, and pre-mutation revalidation requires the fresh thread record to remain `unread: true`. A retrievable thread record proves only that the record exists, not that it is in the active inbox. Read notifications must be handled manually (or made unread before a later run). This avoids claiming unsupported active-inbox membership guarantees, though it cannot eliminate changes that race with a request already in progress.
 
 Temporary network errors and HTTP 429, 502, 503, and 504 responses are attempted at most three times. Retries honor GitHub retry/rate-limit headers and otherwise use exponential backoff with jitter. Cancellation stops retries immediately.
+
+### Debug diagnostics
+
+`--debug` adds structured, line-oriented diagnostics to stderr for both preview and apply workflows. Records include workflow phase, notification thread ID when applicable, HTTP method and sanitized path, request attempt, retry decision, response status, GitHub request ID, and available rate-limit metadata. Debug records are serialized across workers and remain suitable for redirected stderr; enabling them does not change the preview/report on stdout.
+
+Debug logging is off by default. Authorization headers, authentication tokens, URL query values, response bodies, and notification content are omitted by construction. Share debug logs only after applying your normal operational review policy.
 
 Marking Done removes the current notification from the inbox; it is not the same as PATCHing a thread to mark it read. Hushing is not a permanent ignore: a future personal mention, assignment, or individual review request can bring the thread back.
 

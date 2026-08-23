@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/maxbeizer/gh-hush/internal/config"
+	"github.com/maxbeizer/gh-hush/internal/diagnostic"
 	ghclient "github.com/maxbeizer/gh-hush/internal/github"
 	"github.com/maxbeizer/gh-hush/internal/model"
 	"github.com/maxbeizer/gh-hush/internal/policy"
@@ -19,7 +20,7 @@ import (
 	"golang.org/x/term"
 )
 
-type runFunc func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool) error
+type runFunc func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool, bool) error
 
 func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	return newRootCommand(stdout, stderr, run)
@@ -27,7 +28,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 
 func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Command {
 	var configPath string
-	var dryRun, confirm bool
+	var dryRun, confirm, debug bool
 	rootCmd := &cobra.Command{
 		Use: "gh-hush", Short: "Explainable, policy-driven GitHub notification triage",
 		SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs,
@@ -47,7 +48,7 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 				}
 				return err
 			}
-			return runOperation(cmd, stdout, stderr, cfg, dryRun, confirm)
+			return runOperation(cmd, stdout, stderr, cfg, dryRun, confirm, debug)
 		},
 	}
 	rootCmd.SetOut(stdout)
@@ -55,30 +56,49 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 	rootCmd.Flags().StringVar(&configPath, "config", "", "override the default user-owned YAML policy path")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "classify notifications without prompting or mutating GitHub")
 	rootCmd.Flags().BoolVar(&confirm, "confirm", false, "unsubscribe from and mark proposed notifications Done without prompting")
+	rootCmd.Flags().BoolVar(&debug, "debug", false, "write request and workflow diagnostics to stderr")
 	rootCmd.MarkFlagsMutuallyExclusive("dry-run", "confirm")
 	return rootCmd
 }
 
-func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dryRun, confirm bool) error {
-	client, err := ghclient.NewCLIClient(command.Context())
+func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dryRun, confirm, debug bool) error {
+	ctx := command.Context()
+	if debug {
+		logger := diagnostic.New(stderr)
+		ctx = diagnostic.WithLogger(ctx, logger)
+		stderr = logger
+		command.SetContext(ctx)
+	}
+	diagnostic.Log(diagnostic.WithPhase(ctx, "startup"), "workflow_start")
+	client, err := ghclient.NewCLIClient(ctx)
 	if err != nil {
+		diagnostic.Log(diagnostic.WithPhase(ctx, "authentication"), "operation_failed", diagnostic.String("operation", "token_lookup"))
 		return fmt.Errorf("initialize authenticated GitHub client: %w", err)
 	}
-	login, err := client.CurrentUser(command.Context())
+	authCtx := diagnostic.WithPhase(ctx, "authentication")
+	login, err := client.CurrentUser(authCtx)
 	if err != nil {
+		diagnostic.Log(authCtx, "operation_failed", diagnostic.String("operation", "current_user"))
 		return fmt.Errorf("authenticate with gh before running gh-hush: %w", err)
 	}
 	if !strings.EqualFold(login, cfg.User) {
+		diagnostic.Log(authCtx, "operation_failed", diagnostic.String("operation", "user_match"))
 		return fmt.Errorf("config user %q does not match authenticated gh user %q", cfg.User, login)
 	}
-	threads, err := client.ListNotifications(command.Context())
+	listCtx := diagnostic.WithPhase(ctx, "listing")
+	threads, err := client.ListNotifications(listCtx)
 	if err != nil {
+		diagnostic.Log(listCtx, "operation_failed", diagnostic.String("operation", "list_notifications"))
 		return fmt.Errorf("fetch unread GitHub notifications: %w", err)
 	}
-	decisions := classifyNotifications(command.Context(), stderr, cfg, client, threads)
+	diagnostic.Log(listCtx, "operation_complete", diagnostic.String("operation", "list_notifications"), diagnostic.Int("count", len(threads)))
+	decisions := classifyNotifications(ctx, stderr, cfg, client, threads)
+	reportCtx := diagnostic.WithPhase(ctx, "report")
 	if err := report.Write(stdout, decisions); err != nil {
+		diagnostic.Log(reportCtx, "operation_failed", diagnostic.String("operation", "write_preview"))
 		return fmt.Errorf("write preview report: %w", err)
 	}
+	diagnostic.Log(reportCtx, "operation_complete", diagnostic.String("operation", "write_preview"), diagnostic.Int("count", len(decisions)))
 	targetCount := countHushActions(decisions)
 	if dryRun || targetCount == 0 {
 		return nil
@@ -97,7 +117,7 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 			return nil
 		}
 	}
-	return applyHushActions(command.Context(), stderr, cfg, client, decisions)
+	return applyHushActions(ctx, stderr, cfg, client, decisions)
 }
 
 type notificationEnricher interface {
@@ -166,6 +186,10 @@ func applyHushActions(ctx context.Context, stderr io.Writer, cfg config.Config, 
 }
 
 func applyHushActionsWithProgressMode(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationClient, decisions []model.Decision, interactive bool) error {
+	ctx = diagnostic.WithPhase(ctx, "apply")
+	if diagnostic.Enabled(ctx) {
+		interactive = false
+	}
 	targets := make([]model.Decision, 0, countHushActions(decisions))
 	for _, decision := range decisions {
 		if decision.Action == model.ActionUnsubscribeAndMarkDone {
@@ -190,12 +214,20 @@ func applyHushActionsWithProgressMode(ctx context.Context, stderr io.Writer, cfg
 		go func() {
 			defer workers.Done()
 			for work := range jobs {
+				workCtx := diagnostic.WithThread(ctx, work.preview.Thread.ID)
+				diagnostic.Log(workCtx, "worker_start")
 				if err := ctx.Err(); err != nil {
+					diagnostic.Log(workCtx, "worker_cancelled")
 					results <- applicationResult{index: work.index, failure: err}
 					continue
 				}
-				result := applyHushAction(ctx, cfg, client, work.preview)
+				result := applyHushAction(workCtx, cfg, client, work.preview)
 				result.index = work.index
+				if errors.Is(result.failure, context.Canceled) || errors.Is(result.failure, context.DeadlineExceeded) {
+					diagnostic.Log(workCtx, "worker_cancelled")
+				} else {
+					diagnostic.Log(workCtx, "worker_complete", diagnostic.Bool("failed", result.failure != nil))
+				}
 				results <- result
 			}
 		}()
@@ -330,7 +362,8 @@ func ruleDescriptions(rules []model.Rule) string {
 }
 
 func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Config, client notificationEnricher, threads []model.Notification) []model.Decision {
-	progress := newClassificationProgress(stderr, isTerminal(stderr))
+	ctx = diagnostic.WithPhase(ctx, "classification")
+	progress := newClassificationProgress(stderr, isTerminal(stderr) && !diagnostic.Enabled(ctx))
 	progress.start(len(threads))
 	if len(threads) == 0 {
 		return nil
@@ -350,8 +383,16 @@ func classifyNotifications(ctx context.Context, stderr io.Writer, cfg config.Con
 			defer workers.Done()
 			for index := range jobs {
 				thread := threads[index]
-				enrichment := client.Enrich(ctx, thread, policy.EnrichmentRequirements(cfg, thread))
-				results <- result{index, policy.Classify(cfg, thread, enrichment)}
+				workCtx := diagnostic.WithThread(ctx, thread.ID)
+				diagnostic.Log(workCtx, "worker_start")
+				enrichment := client.Enrich(workCtx, thread, policy.EnrichmentRequirements(cfg, thread))
+				decision := policy.Classify(cfg, thread, enrichment)
+				if workCtx.Err() != nil {
+					diagnostic.Log(workCtx, "worker_cancelled")
+				} else {
+					diagnostic.Log(workCtx, "worker_complete")
+				}
+				results <- result{index, decision}
 			}
 		}()
 	}

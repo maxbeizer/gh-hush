@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/maxbeizer/gh-hush/internal/diagnostic"
 	"github.com/maxbeizer/gh-hush/internal/model"
 )
 
@@ -90,6 +91,7 @@ func (c *CLIClient) ListNotifications(ctx context.Context) ([]model.Notification
 // must not interpret it as proof that the thread is currently in the inbox.
 // A missing thread record is reported with found=false.
 func (c *CLIClient) GetNotification(ctx context.Context, threadID string) (notification model.Notification, found bool, err error) {
+	ctx = diagnostic.WithThread(ctx, threadID)
 	endpoint, err := notificationThreadEndpoint(threadID)
 	if err != nil {
 		return model.Notification{}, false, err
@@ -105,6 +107,7 @@ func (c *CLIClient) GetNotification(ctx context.Context, threadID string) (notif
 }
 
 func (c *CLIClient) UnsubscribeThread(ctx context.Context, threadID string) error {
+	ctx = diagnostic.WithThread(ctx, threadID)
 	endpoint, err := notificationThreadEndpoint(threadID)
 	if err != nil {
 		return err
@@ -116,6 +119,7 @@ func (c *CLIClient) UnsubscribeThread(ctx context.Context, threadID string) erro
 }
 
 func (c *CLIClient) MarkThreadDone(ctx context.Context, threadID string) error {
+	ctx = diagnostic.WithThread(ctx, threadID)
 	endpoint, err := notificationThreadEndpoint(threadID)
 	if err != nil {
 		return err
@@ -137,6 +141,7 @@ func notificationThreadEndpoint(threadID string) (string, error) {
 // endpoint GET /repos/{owner}/{repo}/discussions/{number}/comments and follow
 // every Link page; only comment bodies are retained by the model.
 func (c *CLIClient) Enrich(ctx context.Context, thread model.Notification, requirements model.EnrichmentRequirements) model.Enrichment {
+	ctx = diagnostic.WithThread(ctx, thread.ID)
 	var enrichment model.Enrichment
 	if requirements.Subject {
 		if thread.Subject.URL == "" {
@@ -226,10 +231,13 @@ func (c *CLIClient) request(ctx context.Context, method, endpoint string) ([]byt
 	if err != nil {
 		return nil, nil, "", err
 	}
+	safeEndpoint := sanitizedEndpoint(requestURL)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
+			diagnostic.Log(ctx, "request_cancelled", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt))
 			return nil, nil, "", err
 		}
+		diagnostic.Log(ctx, "request_start", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt))
 		request, err := http.NewRequestWithContext(ctx, method, requestURL, nil)
 		if err != nil {
 			return nil, nil, "", fmt.Errorf("create GitHub API request: %w", err)
@@ -241,15 +249,21 @@ func (c *CLIClient) request(ctx context.Context, method, endpoint string) ([]byt
 		response, requestErr := c.do(request)
 		if requestErr != nil {
 			if ctx.Err() != nil {
+				diagnostic.Log(ctx, "request_cancelled", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt))
 				return nil, nil, "", ctx.Err()
 			}
-			if !retryableNetworkError(requestErr) {
+			retryable := retryableNetworkError(requestErr)
+			diagnostic.Log(ctx, "request_failed", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt), diagnostic.String("kind", "network"), diagnostic.Bool("retryable", retryable))
+			if !retryable {
 				return nil, nil, "", fmt.Errorf("request GitHub API endpoint %q: %w", requestURL, requestErr)
 			}
 			if attempt == maxAttempts {
 				return nil, nil, "", fmt.Errorf("request GitHub API endpoint %q exhausted %d attempts: %w", requestURL, maxAttempts, requestErr)
 			}
-			if err := c.wait(ctx, backoff(attempt)); err != nil {
+			delay := backoff(attempt)
+			diagnostic.Log(ctx, "retry_scheduled", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt), diagnostic.Int("delay_ms", int(delay/time.Millisecond)))
+			if err := c.wait(ctx, delay); err != nil {
+				diagnostic.Log(ctx, "request_cancelled", diagnostic.String("method", method), diagnostic.String("endpoint", safeEndpoint), diagnostic.Int("attempt", attempt))
 				return nil, nil, "", err
 			}
 			continue
@@ -258,6 +272,7 @@ func (c *CLIClient) request(ctx context.Context, method, endpoint string) ([]byt
 		if response.Request != nil && response.Request.URL != nil {
 			effectiveURL = response.Request.URL.Redacted()
 		}
+		diagnostic.Log(ctx, "response", responseFields(method, sanitizedEndpoint(effectiveURL), attempt, response)...)
 		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 		_ = response.Body.Close()
 		if readErr != nil {
@@ -288,11 +303,37 @@ func (c *CLIClient) request(ctx context.Context, method, endpoint string) ([]byt
 		if attempt == maxAttempts {
 			return nil, response.Header, effectiveURL, fmt.Errorf("GitHub API request exhausted %d attempts: %w", maxAttempts, apiErr)
 		}
-		if err := c.wait(ctx, retryDelay(response.Header, attempt)); err != nil {
+		delay := retryDelay(response.Header, attempt)
+		diagnostic.Log(ctx, "retry_scheduled", diagnostic.String("method", method), diagnostic.String("endpoint", sanitizedEndpoint(effectiveURL)), diagnostic.Int("attempt", attempt), diagnostic.Int("delay_ms", int(delay/time.Millisecond)))
+		if err := c.wait(ctx, delay); err != nil {
+			diagnostic.Log(ctx, "request_cancelled", diagnostic.String("method", method), diagnostic.String("endpoint", sanitizedEndpoint(effectiveURL)), diagnostic.Int("attempt", attempt))
 			return nil, nil, effectiveURL, err
 		}
 	}
 	panic("unreachable")
+}
+
+func sanitizedEndpoint(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.EscapedPath() == "" {
+		return "[invalid]"
+	}
+	// Query values can contain credentials or notification content. Request
+	// diagnostics need only the operation endpoint, so omit the query entirely.
+	return parsed.EscapedPath()
+}
+
+func responseFields(method, endpoint string, attempt int, response *http.Response) []diagnostic.Field {
+	return []diagnostic.Field{
+		diagnostic.String("method", method),
+		diagnostic.String("endpoint", endpoint),
+		diagnostic.Int("attempt", attempt),
+		diagnostic.Int("status", response.StatusCode),
+		diagnostic.String("request_id", response.Header.Get("X-GitHub-Request-Id")),
+		diagnostic.String("rate_limit_remaining", response.Header.Get("X-RateLimit-Remaining")),
+		diagnostic.String("rate_limit_reset", response.Header.Get("X-RateLimit-Reset")),
+		diagnostic.String("retry_after", response.Header.Get("Retry-After")),
+	}
 }
 
 func (c *CLIClient) resolve(endpoint string) (string, error) {

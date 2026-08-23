@@ -14,11 +14,75 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maxbeizer/gh-hush/internal/diagnostic"
 	"github.com/maxbeizer/gh-hush/internal/model"
 )
 
 func testClient(server *httptest.Server) *CLIClient {
 	return &CLIClient{httpClient: server.Client(), apiBase: server.URL, token: "test", sleep: func(context.Context, time.Duration) error { return nil }}
+}
+
+func TestDebugLogsRequestsRetriesAndSafeResponseMetadata(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if got := r.Header.Get("Authorization"); got != "Bearer token-must-not-appear" {
+			t.Errorf("Authorization=%q", got)
+		}
+		w.Header().Set("X-GitHub-Request-Id", fmt.Sprintf("request-%d", attempts))
+		w.Header().Set("X-RateLimit-Remaining", "42")
+		if attempts == 1 {
+			w.Header().Set("Retry-After", "0")
+			http.Error(w, "sensitive response body", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+
+	var output strings.Builder
+	ctx := diagnostic.WithLogger(context.Background(), diagnostic.New(&output))
+	ctx = diagnostic.WithPhase(ctx, "listing")
+	client := testClient(server)
+	client.token = "token-must-not-appear"
+	if _, err := client.ListNotifications(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	for _, want := range []string{
+		"debug event=request_start phase=listing method=GET endpoint=/notifications attempt=1",
+		"debug event=response phase=listing method=GET endpoint=/notifications attempt=1 status=503 request_id=request-1 rate_limit_remaining=42 retry_after=0",
+		"debug event=retry_scheduled phase=listing method=GET endpoint=/notifications attempt=1 delay_ms=0",
+		"debug event=request_start phase=listing method=GET endpoint=/notifications attempt=2",
+		"status=200 request_id=request-2 rate_limit_remaining=42",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("debug output missing %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"token-must-not-appear", "Authorization", "sensitive response body", "per_page=100"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("debug output exposed %q: %s", forbidden, got)
+		}
+	}
+}
+
+func TestDebugLogsCancellationWithoutStartingARequest(t *testing.T) {
+	var output strings.Builder
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ctx = diagnostic.WithLogger(ctx, diagnostic.New(&output))
+	ctx = diagnostic.WithPhase(ctx, "listing")
+	server := httptest.NewServer(nil)
+	defer server.Close()
+	_, err := testClient(server).ListNotifications(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "event=request_cancelled phase=listing method=GET endpoint=/notifications attempt=1") || strings.Contains(got, "event=request_start") {
+		t.Fatalf("cancellation output=%q", got)
+	}
 }
 
 func TestNewCLIClientPinsTokenLookupToGitHubDotComAPIHost(t *testing.T) {

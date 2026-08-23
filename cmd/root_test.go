@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/maxbeizer/gh-hush/internal/config"
+	"github.com/maxbeizer/gh-hush/internal/diagnostic"
 	"github.com/maxbeizer/gh-hush/internal/model"
 	"github.com/spf13/cobra"
 )
@@ -52,9 +53,9 @@ func TestNoArgsRunsDefaultOperation(t *testing.T) {
 	_ = os.MkdirAll(dir, 0755)
 	_ = os.WriteFile(filepath.Join(dir, "config.yml"), []byte(validConfigYAML), 0600)
 	called := false
-	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, cfg config.Config, dry, confirm bool) error {
+	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, cfg config.Config, dry, confirm, debug bool) error {
 		called = true
-		if cfg.User != "octocat" || dry || confirm {
+		if cfg.User != "octocat" || dry || confirm || debug {
 			t.Fail()
 		}
 		return nil
@@ -64,6 +65,26 @@ func TestNoArgsRunsDefaultOperation(t *testing.T) {
 		t.Fatalf("err=%v called=%v", err, called)
 	}
 }
+func TestDebugFlagIsOptIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	dir := filepath.Join(home, "gh-hush")
+	_ = os.MkdirAll(dir, 0755)
+	_ = os.WriteFile(filepath.Join(dir, "config.yml"), []byte(validConfigYAML), 0600)
+	called := false
+	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, _ config.Config, _, _, debug bool) error {
+		called = true
+		if !debug {
+			t.Fatal("--debug was not passed to the operation")
+		}
+		return nil
+	})
+	command.SetArgs([]string{"--debug"})
+	if err := command.Execute(); err != nil || !called {
+		t.Fatalf("err=%v called=%v", err, called)
+	}
+}
+
 func TestDryRunAndConfirmAreMutuallyExclusive(t *testing.T) {
 	command := NewRootCommand(io.Discard, io.Discard)
 	command.SetArgs([]string{"--dry-run", "--confirm"})
@@ -421,6 +442,30 @@ func TestClassifyNotificationsPreservesOrder(t *testing.T) {
 	got := classifyNotifications(context.Background(), &out, testConfig(), &fakeClient{}, items)
 	if got[0].Thread.ID != "1" || got[1].Thread.ID != "2" || !strings.Contains(out.String(), "unread notifications") {
 		t.Fatalf("got=%#v out=%s", got, out.String())
+	}
+}
+
+func TestDebugWorkflowEventsCoverClassificationAndApply(t *testing.T) {
+	var output strings.Builder
+	logger := diagnostic.New(&output)
+	ctx := diagnostic.WithLogger(context.Background(), logger)
+	item := notification("thread-1", "subscribed")
+	client := &fakeClient{}
+
+	decisions := classifyNotifications(ctx, logger, testConfig(), client, []model.Notification{item})
+	if err := applyHushActions(ctx, logger, testConfig(), client, decisions); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	for _, want := range []string{
+		"event=worker_start phase=classification thread_id=thread-1",
+		"event=worker_complete phase=classification thread_id=thread-1",
+		"event=worker_start phase=apply thread_id=thread-1",
+		"event=worker_complete phase=apply thread_id=thread-1 failed=false",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("debug output missing %q:\n%s", want, got)
+		}
 	}
 }
 
