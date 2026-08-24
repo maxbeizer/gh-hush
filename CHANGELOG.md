@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-24
+
+### Fixed
+
+- Show subject browser URLs from GitHub's `html_url` in preview reports instead of exposing API subject URLs, with validated repository links as a safe fallback.
+- Keep display-only URL enrichment isolated from policy classification and avoid repeating display-only requests during apply revalidation.
+
 ## [0.1.3] - 2026-08-24
 
 ### Fixed
@@ -58,7 +65,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 - `--dry-run` for a guaranteed preview-only run.
 - Initial release.
 
-[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/maxbeizer/gh-hush/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/maxbeizer/gh-hush/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/maxbeizer/gh-hush/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/maxbeizer/gh-hush/compare/v0.1.0...v0.1.1
