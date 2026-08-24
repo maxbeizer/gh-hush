@@ -225,10 +225,21 @@ func TestFormatDurationPrecision(t *testing.T) {
 }
 
 func TestClassifyReportsElapsed(t *testing.T) {
-	setClock(t, time.Unix(0, 0), time.Unix(0, 0).Add(1200*time.Millisecond))
-	var out strings.Builder
-	classifyNotifications(context.Background(), &out, policy.NewEvaluator(testConfig(), &fakeClient{}), []model.Notification{notification("1", "subscribed"), notification("2", "mention")})
-	if !strings.Contains(out.String(), "classified 2/2 notifications in 1.2s") {
-		t.Fatalf("classification timing missing: %q", out.String())
-	}
+	t.Run("notifications", func(t *testing.T) {
+		setClock(t, time.Unix(0, 0), time.Unix(0, 0).Add(1200*time.Millisecond))
+		var out strings.Builder
+		classifyNotifications(context.Background(), &out, policy.NewEvaluator(testConfig(), &fakeClient{}), []model.Notification{notification("1", "subscribed"), notification("2", "mention")})
+		if !strings.Contains(out.String(), "classified 2/2 notifications in 1.2s") {
+			t.Fatalf("classification timing missing: %q", out.String())
+		}
+	})
+
+	t.Run("empty inbox", func(t *testing.T) {
+		setClock(t, time.Unix(0, 0), time.Unix(0, 0).Add(25*time.Millisecond))
+		var out strings.Builder
+		classifyNotifications(context.Background(), &out, policy.NewEvaluator(testConfig(), &fakeClient{}), nil)
+		if got, want := out.String(), "No unread notifications to classify.\nclassified 0/0 notifications in 25ms\n"; got != want {
+			t.Fatalf("output=%q want=%q", got, want)
+		}
+	})
 }

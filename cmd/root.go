@@ -181,6 +181,7 @@ func classifyNotifications(ctx context.Context, stderr io.Writer, evaluator *pol
 	progress := newClassificationProgress(stderr, isTerminal(stderr) && !diagnostic.Enabled(ctx))
 	progress.start(len(threads))
 	if len(threads) == 0 {
+		_, _ = fmt.Fprintf(stderr, "classified 0/0 notifications in %s\n", formatDuration(now().Sub(classifyStart)))
 		return nil
 	}
 	const maxWorkers = 8
