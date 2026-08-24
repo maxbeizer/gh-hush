@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-24
+
+### Security
+
+- Isolate GitHub API traffic behind an origin-locked transport so requests cannot be redirected to a different host.
+- Harden GitHub transport error redaction to avoid leaking sensitive request data in error messages.
+
 ## [0.1.0] - 2026-08-23
 
 ### Changed
@@ -39,5 +46,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 - `--dry-run` for a guaranteed preview-only run.
 - Initial release.
 
-[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/maxbeizer/gh-hush/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/maxbeizer/gh-hush/releases/tag/v0.1.0
