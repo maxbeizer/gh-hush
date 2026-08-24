@@ -37,7 +37,11 @@ gh-hush reports concise, human-readable elapsed times on stderr for the major ph
 authenticated and listed 1120 unread notifications in 2.1s
 classified 1120/1120 notifications in 18.4s
 generated preview report in 120ms
-application summary: targets=…; …; done_failed=0; elapsed=42.7s
+Application summary
+  targets:      1120 notifications
+  unsubscribed: 1120 succeeded, 0 failed
+  marked Done:  1120 succeeded, 0 failed
+  elapsed:      42.7s
 total runtime: 63.4s (excludes interactive confirmation wait)
 ```
 
