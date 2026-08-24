@@ -143,9 +143,7 @@ func Apply(ctx context.Context, output io.Writer, cfg config.Config, client Clie
 	if err := ctx.Err(); err != nil && next < len(targets) {
 		failures = append(failures, err)
 	}
-	_, _ = fmt.Fprintf(output, "application summary: targets=%d; missing=%d; no_longer_unread=%d; protected=%d; revalidation_failed=%d; unsubscribe_succeeded=%d; unsubscribe_failed=%d; done_succeeded=%d; done_failed=%d; elapsed=%s\n",
-		total.Targets, total.Missing, total.NoLongerUnread, total.Protected, total.RevalidationFailed,
-		total.UnsubscribeSucceeded, total.UnsubscribeFailed, total.DoneSucceeded, total.DoneFailed, formatDuration(now().Sub(applyStart)))
+	writeSummary(output, total, now().Sub(applyStart))
 	if len(failures) > 0 {
 		return fmt.Errorf("one or more notification updates did not complete safely: %w", errors.Join(failures...))
 	}
@@ -230,6 +228,43 @@ func ruleDescriptions(rules []model.Rule) string {
 		descriptions[i] = fmt.Sprintf("%s (%s)", rule.ID, rule.Evidence)
 	}
 	return strings.Join(descriptions, "; ")
+}
+
+// writeSummary renders a readable, aligned application summary. It always
+// reports the headline outcome, then lists only the skip and failure
+// categories that actually occurred so the common success path stays terse.
+// Every underlying field remains represented in the numbers shown.
+func writeSummary(output io.Writer, total summary, elapsed time.Duration) {
+	_, _ = fmt.Fprintln(output, "Application summary")
+	_, _ = fmt.Fprintf(output, "  targets:      %d %s\n", total.Targets, notificationWord(total.Targets))
+	_, _ = fmt.Fprintf(output, "  unsubscribed: %d succeeded, %d failed\n", total.UnsubscribeSucceeded, total.UnsubscribeFailed)
+	_, _ = fmt.Fprintf(output, "  marked Done:  %d succeeded, %d failed\n", total.DoneSucceeded, total.DoneFailed)
+
+	skipped := total.Missing + total.NoLongerUnread + total.Protected + total.RevalidationFailed
+	if skipped > 0 {
+		_, _ = fmt.Fprintf(output, "  skipped:      %d total\n", skipped)
+		for _, item := range []struct {
+			label string
+			count int
+		}{
+			{"missing", total.Missing},
+			{"no longer unread", total.NoLongerUnread},
+			{"protected", total.Protected},
+			{"revalidation failed", total.RevalidationFailed},
+		} {
+			if item.count > 0 {
+				_, _ = fmt.Fprintf(output, "    - %s: %d\n", item.label, item.count)
+			}
+		}
+	}
+	_, _ = fmt.Fprintf(output, "  elapsed:      %s\n", formatDuration(elapsed))
+}
+
+func notificationWord(count int) string {
+	if count == 1 {
+		return "notification"
+	}
+	return "notifications"
 }
 
 func formatDuration(d time.Duration) string {

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-24
+
+### Changed
+
+- Replace the dense one-line apply summary with an aligned, multi-line "Application summary" block that groups targets, unsubscribe, mark Done, skipped, and elapsed metrics for easier reading.
+
 ## [0.1.1] - 2026-08-24
 
 ### Security
@@ -46,6 +52,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 - `--dry-run` for a guaranteed preview-only run.
 - Initial release.
 
-[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/maxbeizer/gh-hush/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/maxbeizer/gh-hush/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/maxbeizer/gh-hush/releases/tag/v0.1.0

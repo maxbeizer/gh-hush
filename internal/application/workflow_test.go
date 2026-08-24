@@ -30,7 +30,7 @@ func TestApplyHushActionsSuccessAndEndpointOrdering(t *testing.T) {
 	if strings.Join(client.calls, ",") != "unsubscribe:1,done:1" {
 		t.Fatalf("calls=%v", client.calls)
 	}
-	for _, text := range []string{"unsubscribe_succeeded=1", "done_succeeded=1"} {
+	for _, text := range []string{"unsubscribed: 1 succeeded, 0 failed", "marked Done:  1 succeeded, 0 failed"} {
 		if !strings.Contains(progress.String(), text) {
 			t.Errorf("progress missing %q: %s", text, progress.String())
 		}
@@ -47,7 +47,7 @@ func TestApplyDoesNotMarkDoneAfterUnsubscribeFailureAndContinues(t *testing.T) {
 	}
 	requireOperations(t, client, "1", "get,unsubscribe")
 	requireOperations(t, client, "2", "get,unsubscribe,done")
-	if !strings.Contains(progress.String(), "unsubscribe_failed=1") || !strings.Contains(progress.String(), "done_succeeded=1") {
+	if !strings.Contains(progress.String(), "unsubscribed: 1 succeeded, 1 failed") || !strings.Contains(progress.String(), "marked Done:  1 succeeded, 0 failed") {
 		t.Fatalf("summary=%s", progress.String())
 	}
 }
@@ -65,7 +65,7 @@ func TestApplyContinuesAfterDoneRetryExhaustion(t *testing.T) {
 	}
 	requireOperations(t, client, "1", "get,unsubscribe,done")
 	requireOperations(t, client, "2", "get,unsubscribe,done")
-	if !strings.Contains(out.String(), "done_failed=1") || !strings.Contains(out.String(), "done_succeeded=1") {
+	if !strings.Contains(out.String(), "marked Done:  1 succeeded, 1 failed") {
 		t.Fatalf("summary=%s", out.String())
 	}
 }
@@ -76,7 +76,7 @@ func TestApplyReportsDoneFailureAndDoesNotVerifyThreadDisappearance(t *testing.T
 		client := &fakeClient{doneFailures: map[string]error{"1": errors.New("done failed")}}
 		var out strings.Builder
 		err := apply(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}})
-		if err == nil || !strings.Contains(err.Error(), "unsubscribe succeeded but Done failed") || !strings.Contains(out.String(), "done_failed=1") {
+		if err == nil || !strings.Contains(err.Error(), "unsubscribe succeeded but Done failed") || !strings.Contains(out.String(), "marked Done:  0 succeeded, 1 failed") {
 			t.Fatalf("err=%v out=%s", err, out.String())
 		}
 	})
@@ -90,7 +90,7 @@ func TestApplyReportsDoneFailureAndDoesNotVerifyThreadDisappearance(t *testing.T
 			t.Fatal(err)
 		}
 		requireOperations(t, client, "1", "get,unsubscribe,done")
-		if !strings.Contains(out.String(), "done_succeeded=1") || strings.Contains(out.String(), "verification") {
+		if !strings.Contains(out.String(), "marked Done:  1 succeeded, 0 failed") || strings.Contains(out.String(), "verification") {
 			t.Fatalf("out=%s", out.String())
 		}
 	})
@@ -112,7 +112,7 @@ func TestApplyRevalidationEvidenceFailureReturnsErrorAndContinues(t *testing.T) 
 	}
 	requireOperations(t, client, "1", "get,subject")
 	requireOperations(t, client, "2", "get,subject,unsubscribe,done")
-	if !strings.Contains(out.String(), "revalidation_failed=1") || !strings.Contains(out.String(), "done_succeeded=1") {
+	if !strings.Contains(out.String(), "- revalidation failed: 1") || !strings.Contains(out.String(), "marked Done:  1 succeeded, 0 failed") {
 		t.Fatalf("summary=%s", out.String())
 	}
 }
@@ -125,8 +125,11 @@ func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.
 		if err := apply(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
 			t.Fatal(err)
 		}
-		if len(client.calls) != 0 || !strings.Contains(out.String(), "missing=1") {
+		if len(client.calls) != 0 || !strings.Contains(out.String(), "- missing: 1") {
 			t.Fatalf("calls=%v out=%s", client.calls, out.String())
+		}
+		if !strings.Contains(out.String(), "  skipped:      1 total\n") {
+			t.Fatalf("missing aligned skipped header: out=%s", out.String())
 		}
 	})
 	t.Run("no longer unread", func(t *testing.T) {
@@ -139,7 +142,7 @@ func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.
 			t.Fatal(err)
 		}
 		requireOperations(t, client, "1", "get")
-		if !strings.Contains(out.String(), "no_longer_unread=1") || !strings.Contains(out.String(), "cannot distinguish read inbox entries from Done history") {
+		if !strings.Contains(out.String(), "- no longer unread: 1") || !strings.Contains(out.String(), "cannot distinguish read inbox entries from Done history") {
 			t.Fatalf("out=%s", out.String())
 		}
 	})
@@ -151,7 +154,7 @@ func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.
 		if err := apply(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: preview, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
 			t.Fatal(err)
 		}
-		if len(client.calls) != 0 || !strings.Contains(out.String(), "protected=1") || !strings.Contains(out.String(), "keep.personal_mention") {
+		if len(client.calls) != 0 || !strings.Contains(out.String(), "- protected: 1") || !strings.Contains(out.String(), "keep.personal_mention") {
 			t.Fatalf("calls=%v out=%s", client.calls, out.String())
 		}
 	})
@@ -169,7 +172,11 @@ func TestApplyWithNoTargetsReportsEmptyProgressAndSummary(t *testing.T) {
 	}
 
 	want := "No notification updates to apply.\n" +
-		"application summary: targets=0; missing=0; no_longer_unread=0; protected=0; revalidation_failed=0; unsubscribe_succeeded=0; unsubscribe_failed=0; done_succeeded=0; done_failed=0; elapsed=42.7s\n"
+		"Application summary\n" +
+		"  targets:      0 notifications\n" +
+		"  unsubscribed: 0 succeeded, 0 failed\n" +
+		"  marked Done:  0 succeeded, 0 failed\n" +
+		"  elapsed:      42.7s\n"
 	if got := out.String(); got != want {
 		t.Fatalf("output mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -201,7 +208,7 @@ func TestApplyInteractiveProgressFinishesBeforeDurableDiagnostics(t *testing.T) 
 	if carriageReturn := strings.LastIndex(got, "\r"); carriageReturn >= diagnostic {
 		t.Fatalf("progress update could overwrite durable diagnostic: %q", got)
 	}
-	if !strings.Contains(got[diagnostic:], "application summary: targets=1; missing=1") {
+	if !strings.Contains(got[diagnostic:], "Application summary") || !strings.Contains(got[diagnostic:], "- missing: 1") {
 		t.Fatalf("aggregate summary missing after diagnostic: %q", got)
 	}
 }
@@ -330,7 +337,7 @@ func TestApplyAggregatesFailuresInTargetOrder(t *testing.T) {
 	if one, two := strings.Index(message, "failure-one"), strings.Index(message, "failure-two"); one < 0 || two < 0 || one >= two {
 		t.Fatalf("failures not in target order: %s", message)
 	}
-	if !strings.Contains(out.String(), "unsubscribe_failed=2") {
+	if !strings.Contains(out.String(), "unsubscribed: 0 succeeded, 2 failed") {
 		t.Fatalf("summary=%s", out.String())
 	}
 }
@@ -556,7 +563,7 @@ func TestApplySummaryReportsAggregateElapsed(t *testing.T) {
 	if err := apply(context.Background(), &out, testConfig(), client, hushDecisions(1)); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "elapsed=3.0s") || !strings.Contains(out.String(), "done_succeeded=1") {
+	if !strings.Contains(out.String(), "elapsed:      3.0s") || !strings.Contains(out.String(), "marked Done:  1 succeeded, 0 failed") {
 		t.Fatalf("summary missing elapsed or counters: %q", out.String())
 	}
 }
