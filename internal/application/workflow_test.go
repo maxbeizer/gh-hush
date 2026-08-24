@@ -96,6 +96,39 @@ func TestApplyReportsDoneFailureAndDoesNotVerifyThreadDisappearance(t *testing.T
 	})
 }
 
+func TestApplyRevalidationAvoidsDisplayFetchAndPreservesPreviewURL(t *testing.T) {
+	item := notification("1", "subscribed")
+	client := &fakeClient{
+		subjectFailures:     map[string]error{"1": errors.New("display fetch would fail")},
+		unsubscribeFailures: map[string]error{"1": errors.New("unsubscribe failed")},
+	}
+	const previewURL = "https://github.com/github/repo/issues/1"
+	var out strings.Builder
+
+	err := apply(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: previewURL}})
+	if err == nil || !strings.Contains(err.Error(), previewURL) || strings.Contains(err.Error(), "display fetch would fail") {
+		t.Fatalf("err=%v", err)
+	}
+	requireOperations(t, client, "1", "get,unsubscribe")
+}
+
+func TestApplyRevalidationDoesNotPreservePreviewURLAfterRepositoryChange(t *testing.T) {
+	preview := notification("1", "subscribed")
+	current := notification("1", "subscribed")
+	current.Repository = model.Repository{FullName: "github/new-repo", HTMLURL: "https://github.com/github/new-repo"}
+	client := &fakeClient{
+		getResults:          map[string][]fakeGetResult{"1": {{thread: current, found: true}}},
+		unsubscribeFailures: map[string]error{"1": errors.New("unsubscribe failed")},
+	}
+	const oldURL = "https://github.com/github/repo/issues/1"
+
+	err := apply(context.Background(), io.Discard, testConfig(), client, []model.Decision{{Thread: preview, Action: model.ActionUnsubscribeAndMarkDone, URL: oldURL}})
+	if err == nil || strings.Contains(err.Error(), oldURL) || !strings.Contains(err.Error(), current.Repository.HTMLURL) {
+		t.Fatalf("err=%v", err)
+	}
+	requireOperations(t, client, "1", "get,unsubscribe")
+}
+
 func TestApplyRevalidationEvidenceFailureReturnsErrorAndContinues(t *testing.T) {
 	first, second := notification("1", "subscribed"), notification("2", "subscribed")
 	client := &fakeClient{subjectFailures: map[string]error{"1": errors.New("request exhausted 3 attempts")}}

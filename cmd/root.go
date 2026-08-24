@@ -201,7 +201,7 @@ func classifyNotifications(ctx context.Context, stderr io.Writer, evaluator *pol
 				thread := threads[index]
 				workCtx := diagnostic.WithThread(ctx, thread.ID)
 				diagnostic.Log(workCtx, "worker_start")
-				decision := evaluator.Evaluate(workCtx, thread)
+				decision := evaluator.EvaluateForPreview(workCtx, thread)
 				if workCtx.Err() != nil {
 					diagnostic.Log(workCtx, "worker_cancelled")
 				} else {

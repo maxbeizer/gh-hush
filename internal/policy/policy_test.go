@@ -67,6 +67,32 @@ func TestKeepRules(t *testing.T) {
 	}
 }
 
+func TestPreviewDisplayEnrichmentIsIsolatedFromClassification(t *testing.T) {
+	item := thread("1", "github/repo", "Issue", "mention")
+	item.Repository.HTMLURL = "https://github.test/github/repo/"
+	source := &testEvidenceSource{subject: model.Resource{
+		HTMLURL:   "https://github.test/github/repo/issues/1",
+		Assignees: []model.User{{Login: "octocat"}},
+		User:      model.User{Login: "octocat"},
+	}}
+
+	d := NewEvaluator(testConfig(), source).EvaluateForPreview(context.Background(), item)
+	if d.Action != model.ActionKeep || d.URL != source.subject.HTMLURL || !reflect.DeepEqual(source.calls, []string{"subject"}) {
+		t.Fatalf("decision=%#v calls=%v", d, source.calls)
+	}
+	if len(d.Rules) != 1 || d.Rules[0].ID != rulePersonalMention {
+		t.Fatalf("display-only fields changed classification rules: %#v", d.Rules)
+	}
+
+	// A partial resource remains useful for display even when its display-only
+	// request fails, but the failure is not policy enrichment failure.
+	source = &testEvidenceSource{subject: model.Resource{HTMLURL: source.subject.HTMLURL}, subjectErr: errors.New("display unavailable")}
+	d = NewEvaluator(testConfig(), source).EvaluateForPreview(context.Background(), item)
+	if d.Action != model.ActionKeep || d.EnrichmentError != "" || d.URL != source.subject.HTMLURL || hasRule(d, ruleSafetyFailure) {
+		t.Fatalf("display failure decision=%#v", d)
+	}
+}
+
 func TestDiscussionHistoricalTeamMentionProtectsAndExactMatchIsRequired(t *testing.T) {
 	item := thread("1", "github/repo", "Discussion", "team_mention")
 	d := NewEvaluator(testConfig(), &testEvidenceSource{comments: []model.Resource{{Body: "old @github/notifications mention"}, {Body: "new comment"}}}).Evaluate(context.Background(), item)
@@ -108,6 +134,17 @@ func TestPartialEvidenceIsEvaluatedAlongsideSafetyFailure(t *testing.T) {
 	})
 }
 
+func TestRequiredSubjectEvidenceWithEmptyURLIsConservativelyKept(t *testing.T) {
+	item := thread("1", "github/repo", "Issue", "subscribed")
+	item.Subject.URL = ""
+	source := &testEvidenceSource{subjectErr: errors.New("notification subject did not include an API URL")}
+
+	d := NewEvaluator(testConfig(), source).Evaluate(context.Background(), item)
+	if d.Action != model.ActionKeep || d.EnrichmentError == "" || !hasRule(d, ruleSafetyFailure) || !reflect.DeepEqual(source.calls, []string{"subject"}) {
+		t.Fatalf("decision=%#v calls=%v", d, source.calls)
+	}
+}
+
 func TestRequiredEvidenceFailureSafetyIsFieldSpecific(t *testing.T) {
 	item := thread("1", "github/repo", "Discussion", "subscribed")
 	source := &testEvidenceSource{
@@ -123,28 +160,48 @@ func TestRequiredEvidenceFailureSafetyIsFieldSpecific(t *testing.T) {
 	}
 }
 
-func TestDecisionURLPreservesEvidenceAndNotificationFallbackOrder(t *testing.T) {
-	item := thread("1", "github/repo", "Issue", "subscribed")
-	item.Repository.HTMLURL = "https://github.test/github/repo"
-
-	d := NewEvaluator(testConfig(), &testEvidenceSource{subject: model.Resource{HTMLURL: "https://github.test/github/repo/issues/1"}}).Evaluate(context.Background(), item)
-	if d.URL != "https://github.test/github/repo/issues/1" {
-		t.Fatalf("evidence URL=%q", d.URL)
+func TestPreviewURLValidationAndFallbacks(t *testing.T) {
+	for _, subjectType := range []string{"Issue", "PullRequest", "Discussion", "Commit", "Release", "CheckSuite", "RepositoryVulnerabilityAlert", "UnknownFutureType"} {
+		t.Run(subjectType, func(t *testing.T) {
+			item := thread("1", "github/repo", subjectType, "mention")
+			item.Repository.HTMLURL = "https://github.test/github/repo/"
+			source := &testEvidenceSource{subject: model.Resource{HTMLURL: "https://github.test/github/repo/subjects/1"}}
+			d := NewEvaluator(testConfig(), source).EvaluateForPreview(context.Background(), item)
+			if d.URL != source.subject.HTMLURL || !reflect.DeepEqual(source.calls, []string{"subject"}) {
+				t.Fatalf("decision=%#v calls=%v", d, source.calls)
+			}
+		})
 	}
 
-	d = NewEvaluator(testConfig(), &testEvidenceSource{subjectErr: errors.New("subject unavailable")}).Evaluate(context.Background(), item)
-	if d.URL != item.Subject.URL {
-		t.Fatalf("subject API fallback URL=%q want=%q", d.URL, item.Subject.URL)
+	item := thread("1", "github/repo", "Issue", "mention")
+	item.Repository.HTMLURL = "https://github.test/github/repo/"
+	for _, tt := range []struct {
+		name    string
+		htmlURL string
+		want    string
+	}{
+		{"empty HTML URL", "", "https://github.test/github/repo/"},
+		{"malformed HTML URL", "://bad", "https://github.test/github/repo/"},
+		{"GitHub API HTML URL", "https://api.github.com/repos/github/repo/issues/1", "https://github.test/github/repo/"},
+		{"other API host", "https://api.github.test/repos/github/repo/issues/1", "https://github.test/github/repo/"},
+		{"enterprise API path", "https://github.example/api/v3/repos/github/repo/issues/1", "https://github.test/github/repo/"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewEvaluator(testConfig(), &testEvidenceSource{subject: model.Resource{HTMLURL: tt.htmlURL}}).EvaluateForPreview(context.Background(), item)
+			if d.URL != tt.want || d.URL == item.Subject.URL {
+				t.Fatalf("URL=%q want=%q", d.URL, tt.want)
+			}
+		})
 	}
 
 	item.Subject.URL = ""
-	d = NewEvaluator(withEvidenceRulesDisabled(testConfig()), &testEvidenceSource{}).Evaluate(context.Background(), item)
-	if d.URL != item.Repository.HTMLURL+"/notifications" {
-		t.Fatalf("repository fallback URL=%q", d.URL)
+	source := &testEvidenceSource{}
+	d := NewEvaluator(withEvidenceRulesDisabled(testConfig()), source).EvaluateForPreview(context.Background(), item)
+	if d.URL != "https://github.test/github/repo/" || len(source.calls) != 0 {
+		t.Fatalf("repository fallback decision=%#v calls=%v", d, source.calls)
 	}
-
 	item.Repository.HTMLURL = ""
-	d = NewEvaluator(withEvidenceRulesDisabled(testConfig()), &testEvidenceSource{}).Evaluate(context.Background(), item)
+	d = NewEvaluator(withEvidenceRulesDisabled(testConfig()), source).EvaluateForPreview(context.Background(), item)
 	if d.URL != "unavailable" {
 		t.Fatalf("terminal fallback URL=%q", d.URL)
 	}
@@ -160,7 +217,7 @@ func TestEvaluatorSelectsOnlyNecessaryEvidence(t *testing.T) {
 		{"discussion uses complete history", testConfig(), thread("1", "github/repo", "Discussion", "subscribed"), []string{"subject", "discussion_comments"}},
 		{"unsupported uses none", testConfig(), thread("1", "github/repo", "Unknown", "subscribed"), nil},
 		{"conclusive reason uses none", testConfig(), thread("1", "github/repo", "Issue", "mention"), nil},
-		{"evidence rules disabled uses none", withEvidenceRulesDisabled(testConfig()), thread("1", "github/repo", "Issue", "subscribed"), nil},
+		{"disabled evidence rules use none", withEvidenceRulesDisabled(testConfig()), thread("1", "github/repo", "Issue", "subscribed"), nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

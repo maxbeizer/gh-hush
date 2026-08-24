@@ -14,6 +14,7 @@ import (
 	"github.com/maxbeizer/gh-hush/internal/diagnostic"
 	"github.com/maxbeizer/gh-hush/internal/model"
 	"github.com/maxbeizer/gh-hush/internal/policy"
+	"github.com/maxbeizer/gh-hush/internal/reporturl"
 )
 
 // Client is the GitHub notification capability required by the application
@@ -171,6 +172,14 @@ func applyOne(ctx context.Context, evaluator *policy.Evaluator, client Client, p
 		return outcome
 	}
 	fresh := evaluator.Evaluate(ctx, current)
+	// Revalidation fetches only policy-required evidence. Retain the exact URL
+	// resolved during preview only while the notification still belongs to the
+	// same repository, and always reapply the report URL safety contract.
+	if current.Repository.FullName != "" && strings.EqualFold(preview.Thread.Repository.FullName, current.Repository.FullName) {
+		fresh.URL = reporturl.Safe(preview.URL, fresh.URL, current.Repository.HTMLURL)
+	} else {
+		fresh.URL = reporturl.Safe(fresh.URL, current.Repository.HTMLURL)
+	}
 	if fresh.EnrichmentError != "" {
 		outcome.summary.RevalidationFailed++
 		outcome.failure = fmt.Errorf("%s: revalidation evidence fetch failed: %s", fresh.URL, fresh.EnrichmentError)

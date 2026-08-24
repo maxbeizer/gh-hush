@@ -9,6 +9,7 @@ import (
 
 	"github.com/maxbeizer/gh-hush/internal/config"
 	"github.com/maxbeizer/gh-hush/internal/model"
+	"github.com/maxbeizer/gh-hush/internal/reporturl"
 )
 
 const (
@@ -46,17 +47,41 @@ func NewEvaluator(cfg config.Config, source EvidenceSource) *Evaluator {
 	return &Evaluator{cfg: cfg, source: source}
 }
 
-// Evaluate produces the complete policy decision for a notification.
+// Evaluate produces a policy decision using only classification-required
+// evidence. In particular, application revalidation does not make requests
+// solely to improve a report URL.
 func (e *Evaluator) Evaluate(ctx context.Context, thread model.Notification) model.Decision {
+	return e.evaluate(ctx, thread, false)
+}
+
+// EvaluateForPreview also attempts to resolve the subject resource's exact
+// browser URL. Display-only subject data and failures are isolated from policy
+// classification and its safety semantics.
+func (e *Evaluator) EvaluateForPreview(ctx context.Context, thread model.Notification) model.Decision {
+	return e.evaluate(ctx, thread, true)
+}
+
+func (e *Evaluator) evaluate(ctx context.Context, thread model.Notification, resolveDisplayURL bool) model.Decision {
 	requirements := e.evidenceRequirements(thread)
 	var evidence evaluationEvidence
 	if requirements.subject {
+		// FetchSubject intentionally handles an empty API URL as an error. Required
+		// evidence must never be skipped merely because the URL is absent.
 		evidence.subject, evidence.subjectErr = e.source.FetchSubject(ctx, thread)
 	}
 	if requirements.discussionComments {
 		evidence.discussionComments, evidence.discussionCommentsErr = e.source.FetchDiscussionComments(ctx, thread)
 	}
-	return e.decide(thread, requirements, evidence)
+
+	displaySubject := evidence.subject
+	if resolveDisplayURL && !requirements.subject && thread.Subject.URL != "" {
+		// Do not place this resource in classification evidence: fields returned by
+		// a display-only request must not add assignment, authorship, or other rules.
+		displaySubject, _ = e.source.FetchSubject(ctx, thread)
+	}
+	decision := e.decide(thread, requirements, evidence)
+	decision.URL = reporturl.Safe(displaySubject.HTMLURL, thread.Repository.HTMLURL)
+	return decision
 }
 
 type evidenceRequirements struct {
@@ -107,7 +132,7 @@ func (e *Evaluator) evidenceRequirements(thread model.Notification) evidenceRequ
 }
 
 func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequirements, evidence evaluationEvidence) model.Decision {
-	decision := model.Decision{Thread: thread, URL: notificationURL(thread, evidence)}
+	decision := model.Decision{Thread: thread}
 	repositoryOrg := strings.SplitN(thread.Repository.FullName, "/", 2)[0]
 	if config.Enabled(e.cfg.Keep.ExternalOrganizationIssues) && !strings.EqualFold(repositoryOrg, e.cfg.GitHubOrganization) {
 		decision.Rules = append(decision.Rules, model.Rule{ID: ruleExternalOrganization, Evidence: fmt.Sprintf("repository organization %q differs from configured organization %q", repositoryOrg, e.cfg.GitHubOrganization)})
@@ -185,17 +210,4 @@ func matchingTeamMentions(teams []string, bodies ...string) []string {
 		}
 	}
 	return matches
-}
-
-func notificationURL(thread model.Notification, evidence evaluationEvidence) string {
-	if evidence.subject.HTMLURL != "" {
-		return evidence.subject.HTMLURL
-	}
-	if thread.Subject.URL != "" {
-		return thread.Subject.URL
-	}
-	if thread.Repository.HTMLURL != "" {
-		return thread.Repository.HTMLURL + "/notifications"
-	}
-	return "unavailable"
 }

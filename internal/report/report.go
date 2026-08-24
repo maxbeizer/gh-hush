@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/maxbeizer/gh-hush/internal/model"
+	"github.com/maxbeizer/gh-hush/internal/reporturl"
 )
 
 func Write(w io.Writer, decisions []model.Decision) error {
@@ -30,7 +31,7 @@ func Write(w io.Writer, decisions []model.Decision) error {
 			return err
 		}
 		lines := []struct{ label, value string }{
-			{"URL", decision.URL}, {"Subject type", decision.Thread.Subject.Type},
+			{"URL", reporturl.Safe(decision.URL, decision.Thread.Repository.HTMLURL)}, {"Subject type", decision.Thread.Subject.Type},
 			{"Repository", decision.Thread.Repository.FullName}, {"Notification reason", decision.Thread.Reason},
 			{"Proposed action", string(decision.Action)},
 		}

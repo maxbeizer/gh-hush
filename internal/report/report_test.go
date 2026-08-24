@@ -24,6 +24,29 @@ func TestWriteIncludesCompletePreviewAndRenamedAction(t *testing.T) {
 	}
 }
 
+func TestWriteNeverEmitsAnAPIOrMalformedDecisionURL(t *testing.T) {
+	for _, candidate := range []string{
+		"https://api.github.com/repos/example/repo/issues/1",
+		"https://api.github.test/repos/example/repo/issues/1",
+		"://malformed",
+	} {
+		decision := model.Decision{
+			Thread: model.Notification{
+				Repository: model.Repository{FullName: "example/repo", HTMLURL: "https://github.com/example/repo/"},
+				Subject:    model.Subject{Title: "Subject", Type: "Issue", URL: candidate},
+			},
+			URL: candidate, Action: model.ActionKeep,
+		}
+		var output bytes.Buffer
+		if err := Write(&output, []model.Decision{decision}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(output.String(), candidate) || !strings.Contains(output.String(), "URL: https://github.com/example/repo") {
+			t.Fatalf("candidate %q escaped URL contract: %s", candidate, output.String())
+		}
+	}
+}
+
 func TestWriteZeroUnreadNotifications(t *testing.T) {
 	var output bytes.Buffer
 	if err := Write(&output, nil); err != nil {
