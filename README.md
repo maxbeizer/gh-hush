@@ -2,6 +2,12 @@
 
 `gh-hush` is a safe, explainable GitHub notification triage extension. It fetches unread notifications through the account authenticated by `gh`, evaluates a user-owned policy, and previews every decision before making changes.
 
+## Demo
+
+[Watch the 25-second gh-hush safety demo](assets/demo.mp4).
+
+The demo uses synthetic notification data and human-recorded narration. It focuses on preview-first decisions, matching policy evidence, confirmation and revalidation, failed-unsubscribe safety, and concise results; it does not access live notifications or perform real mutations.
+
 ## Install
 
 ```bash
