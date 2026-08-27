@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+### Fixed
+
+- Guarantee preview URL fallbacks remain browser-facing even when GitHub omits or returns an unsafe repository `html_url`.
+- Build the current checkout before installing it as a local extension, preventing stale binaries from surviving a relink.
+
 ## [0.1.4] - 2026-08-24
 
 ### Fixed

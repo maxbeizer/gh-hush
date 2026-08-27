@@ -80,7 +80,8 @@ func (e *Evaluator) evaluate(ctx context.Context, thread model.Notification, res
 		displaySubject, _ = e.source.FetchSubject(ctx, thread)
 	}
 	decision := e.decide(thread, requirements, evidence)
-	decision.URL = reporturl.Safe(displaySubject.HTMLURL, thread.Repository.HTMLURL)
+	repositoryURL := reporturl.Repository(thread.Repository.HTMLURL, thread.Repository.FullName)
+	decision.URL = reporturl.Safe(displaySubject.HTMLURL, repositoryURL)
 	return decision
 }
 
