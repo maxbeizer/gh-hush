@@ -4,21 +4,13 @@
 
 ## Demo
 
-[Watch the 25-second gh-hush safety demo](assets/demo.mp4).
+https://github.com/user-attachments/assets/dd441762-bfd9-4b45-a9da-22f8ac2de5d1
 
-The demo uses synthetic notification data and human-recorded narration. It focuses on preview-first decisions, matching policy evidence, confirmation and revalidation, failed-unsubscribe safety, and concise results; it does not access live notifications or perform real mutations.
 
 ## Install
 
 ```bash
 gh extension install maxbeizer/gh-hush
-```
-
-For a local checkout:
-
-```bash
-make build
-make install-local
 ```
 
 ## Usage
