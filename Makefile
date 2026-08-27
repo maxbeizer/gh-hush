@@ -50,10 +50,11 @@ build: check-go-version
 run: build
 	./$(BINARY)
 
-install-local:
+install-local: check-go-version
+	$(GO) build -o gh-$(EXTENSION_NAME) .
 	gh extension install .
 
-relink-local: build
+relink-local: check-go-version
 	@if gh extension list | grep -qE '^gh $(EXTENSION_NAME)[[:space:]]'; then \
 		gh extension remove $(EXTENSION_NAME); \
 	fi

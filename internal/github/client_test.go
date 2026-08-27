@@ -1,7 +1,10 @@
 package github
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +13,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/maxbeizer/gh-hush/internal/config"
 	"github.com/maxbeizer/gh-hush/internal/github/transport"
 	"github.com/maxbeizer/gh-hush/internal/model"
+	"github.com/maxbeizer/gh-hush/internal/policy"
+	"github.com/maxbeizer/gh-hush/internal/report"
 )
 
 func testClient(server *httptest.Server) *CLIClient {
@@ -199,6 +205,93 @@ func TestEvidenceAdapterReturnsPartiallyDecodedSubjectWithError(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "fetch subject: decode GitHub API response") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+type previewFixtureTransport struct {
+	notifications []byte
+	subjects      map[string][]byte
+	failures      map[string]error
+}
+
+func (t *previewFixtureTransport) Request(_ context.Context, _ string, endpoint string) (transport.Response, error) {
+	if err := t.failures[endpoint]; err != nil {
+		return transport.Response{}, err
+	}
+	body, ok := t.subjects[endpoint]
+	if !ok {
+		return transport.Response{}, fmt.Errorf("unexpected endpoint %q", endpoint)
+	}
+	return transport.Response{Body: body, Endpoint: endpoint}, nil
+}
+
+func (t *previewFixtureTransport) Pages(_ context.Context, endpoint string, visit func(transport.Response) error) error {
+	if endpoint != "/notifications?per_page=100" {
+		return fmt.Errorf("unexpected paginated endpoint %q", endpoint)
+	}
+	return visit(transport.Response{Body: t.notifications, Endpoint: "/notifications"})
+}
+
+func TestRealisticPreviewPayloadsNeverPrintAPIURLs(t *testing.T) {
+	subjects := []struct{ subjectType, apiPath, htmlPath string }{
+		{"Issue", "issues/1", "issues/1"},
+		{"PullRequest", "pulls/2", "pull/2"},
+		{"Discussion", "discussions/3", "discussions/3"},
+		{"Commit", "commits/abc123", "commit/abc123"},
+		{"Release", "releases/5", "releases/tag/v1.0.0"},
+		{"CheckSuite", "check-suites/6", "actions/runs/6"},
+	}
+	fixture := &previewFixtureTransport{subjects: map[string][]byte{}, failures: map[string]error{}}
+	var notifications []model.Notification
+	var exactURLs []string
+	for index, subject := range subjects {
+		apiURL := "https://api.github.com/repos/acme/repo/" + subject.apiPath
+		htmlURL := "https://github.com/acme/repo/" + subject.htmlPath
+		notifications = append(notifications, model.Notification{
+			ID: fmt.Sprint(index + 1), Unread: true, Reason: "subscribed",
+			Repository: model.Repository{FullName: "acme/repo", HTMLURL: "https://github.com/acme/repo"},
+			Subject:    model.Subject{Title: subject.subjectType + " fixture", Type: subject.subjectType, URL: apiURL},
+		})
+		fixture.subjects[apiURL], _ = json.Marshal(model.Resource{HTMLURL: htmlURL})
+		exactURLs = append(exactURLs, htmlURL)
+	}
+
+	// Exercise both enrichment failure and an unsafe repository html_url. The
+	// repository full_name remains sufficient for a browser-facing fallback.
+	const failedAPIURL = "https://api.github.com/repos/acme/fallback/issues/7"
+	notifications = append(notifications, model.Notification{
+		ID: "7", Unread: true, Reason: "mention",
+		Repository: model.Repository{FullName: "acme/fallback", HTMLURL: "https://api.github.com/repos/acme/fallback"},
+		Subject:    model.Subject{Title: "fallback fixture", Type: "Issue", URL: failedAPIURL},
+	})
+	fixture.failures[failedAPIURL] = errors.New("display enrichment unavailable")
+	fixture.notifications, _ = json.Marshal(notifications)
+
+	client := &CLIClient{transport: fixture}
+	threads, err := client.ListNotifications(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluator := policy.NewEvaluator(config.Config{}, client)
+	decisions := make([]model.Decision, len(threads))
+	for index, thread := range threads {
+		decisions[index] = evaluator.EvaluateForPreview(context.Background(), thread)
+	}
+	var output bytes.Buffer
+	if err := report.Write(&output, decisions); err != nil {
+		t.Fatal(err)
+	}
+	preview := output.String()
+	if strings.Contains(preview, "api.github.com") {
+		t.Fatalf("preview leaked an API URL:\n%s", preview)
+	}
+	for _, exactURL := range exactURLs {
+		if !strings.Contains(preview, "URL: "+exactURL+"\n") {
+			t.Errorf("preview missing exact subject URL %q:\n%s", exactURL, preview)
+		}
+	}
+	if !strings.Contains(preview, "URL: https://github.com/acme/fallback\n") {
+		t.Errorf("preview missing safe repository fallback:\n%s", preview)
 	}
 }
 

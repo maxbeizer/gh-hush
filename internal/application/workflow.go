@@ -153,32 +153,35 @@ func Apply(ctx context.Context, output io.Writer, cfg config.Config, client Clie
 
 func applyOne(ctx context.Context, evaluator *policy.Evaluator, client Client, preview model.Decision) result {
 	var outcome result
+	previewRepositoryURL := reporturl.Repository(preview.Thread.Repository.HTMLURL, preview.Thread.Repository.FullName)
+	previewURL := reporturl.Safe(preview.URL, previewRepositoryURL)
 	current, found, err := client.GetNotification(ctx, preview.Thread.ID)
 	if err != nil {
 		outcome.summary.RevalidationFailed++
-		outcome.failure = fmt.Errorf("%s: revalidation thread fetch failed: %w", preview.URL, err)
+		outcome.failure = fmt.Errorf("%s: revalidation thread fetch failed: %w", previewURL, err)
 		return outcome
 	}
 	if !found {
 		outcome.summary.Missing++
-		outcome.messages = append(outcome.messages, fmt.Sprintf("skip %s: notification thread record is no longer available", preview.URL))
+		outcome.messages = append(outcome.messages, fmt.Sprintf("skip %s: notification thread record is no longer available", previewURL))
 		return outcome
 	}
 	// The per-thread endpoint also returns historical Done records. unread=false
 	// cannot distinguish those records from read entries that remain in inbox.
 	if !current.Unread {
 		outcome.summary.NoLongerUnread++
-		outcome.messages = append(outcome.messages, fmt.Sprintf("skip %s: target is no longer unread; GitHub's REST API cannot distinguish read inbox entries from Done history", preview.URL))
+		outcome.messages = append(outcome.messages, fmt.Sprintf("skip %s: target is no longer unread; GitHub's REST API cannot distinguish read inbox entries from Done history", previewURL))
 		return outcome
 	}
 	fresh := evaluator.Evaluate(ctx, current)
 	// Revalidation fetches only policy-required evidence. Retain the exact URL
 	// resolved during preview only while the notification still belongs to the
 	// same repository, and always reapply the report URL safety contract.
+	repositoryURL := reporturl.Repository(current.Repository.HTMLURL, current.Repository.FullName)
 	if current.Repository.FullName != "" && strings.EqualFold(preview.Thread.Repository.FullName, current.Repository.FullName) {
-		fresh.URL = reporturl.Safe(preview.URL, fresh.URL, current.Repository.HTMLURL)
+		fresh.URL = reporturl.Safe(previewURL, fresh.URL, repositoryURL)
 	} else {
-		fresh.URL = reporturl.Safe(fresh.URL, current.Repository.HTMLURL)
+		fresh.URL = reporturl.Safe(fresh.URL, repositoryURL)
 	}
 	if fresh.EnrichmentError != "" {
 		outcome.summary.RevalidationFailed++

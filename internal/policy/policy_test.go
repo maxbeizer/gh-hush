@@ -202,6 +202,11 @@ func TestPreviewURLValidationAndFallbacks(t *testing.T) {
 	}
 	item.Repository.HTMLURL = ""
 	d = NewEvaluator(withEvidenceRulesDisabled(testConfig()), source).EvaluateForPreview(context.Background(), item)
+	if d.URL != "https://github.com/github/repo" {
+		t.Fatalf("derived repository fallback URL=%q", d.URL)
+	}
+	item.Repository.FullName = "invalid/repo/extra"
+	d = NewEvaluator(withEvidenceRulesDisabled(testConfig()), source).EvaluateForPreview(context.Background(), item)
 	if d.URL != "unavailable" {
 		t.Fatalf("terminal fallback URL=%q", d.URL)
 	}

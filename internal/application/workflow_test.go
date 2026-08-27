@@ -150,6 +150,23 @@ func TestApplyRevalidationEvidenceFailureReturnsErrorAndContinues(t *testing.T) 
 	}
 }
 
+func TestApplyEarlyDiagnosticsSanitizePreviewURL(t *testing.T) {
+	item := notification("1", "subscribed")
+	item.Repository.HTMLURL = "https://api.github.com/repos/github/repo"
+	client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{found: false}}}}
+	var out strings.Builder
+
+	if err := apply(context.Background(), &out, testConfig(), client, []model.Decision{{
+		Thread: item, Action: model.ActionUnsubscribeAndMarkDone,
+		URL: "https://api.github.com/repos/github/repo/issues/1",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "api.github.com") || !strings.Contains(out.String(), "skip https://github.com/github/repo:") {
+		t.Fatalf("unsafe early diagnostic URL: %s", out.String())
+	}
+}
+
 func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		item := notification("1", "subscribed")
@@ -223,15 +240,16 @@ func TestApplyInteractiveProgressFinishesBeforeDurableDiagnostics(t *testing.T) 
 	client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{found: false}}}}
 	var out strings.Builder
 
+	const previewURL = "https://github.com/github/repo/issues/1"
 	if err := Apply(context.Background(), &out, testConfig(), client, []model.Decision{
-		{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"},
+		{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: previewURL},
 	}, true); err != nil {
 		t.Fatal(err)
 	}
 
 	got := out.String()
 	final := strings.Index(got, "✓ Finished applying 1/1 notification update (100%)")
-	diagnostic := strings.Index(got, "skip one: notification thread record is no longer available")
+	diagnostic := strings.Index(got, "skip "+previewURL+": notification thread record is no longer available")
 	if final < 0 || diagnostic < 0 || final >= diagnostic {
 		t.Fatalf("progress was not finalized before diagnostic: %q", got)
 	}
@@ -507,9 +525,9 @@ func newBlockingClient(targetCount int) *blockingClient {
 }
 
 func (c *blockingClient) GetNotification(ctx context.Context, id string) (model.Notification, bool, error) {
-	c.fakeClient.mu.Lock()
-	c.fakeClient.recordOperationLocked(id, "get")
-	c.fakeClient.mu.Unlock()
+	c.mu.Lock()
+	c.recordOperationLocked(id, "get")
+	c.mu.Unlock()
 	c.stateMu.Lock()
 	call := c.gets[id]
 	c.gets[id]++

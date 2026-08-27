@@ -30,8 +30,9 @@ func Write(w io.Writer, decisions []model.Decision) error {
 		if _, err := fmt.Fprintf(w, "\n%d. [%s] %s\n", index+1, strings.ToUpper(string(decision.Action)), decision.Thread.Subject.Title); err != nil {
 			return err
 		}
+		repositoryURL := reporturl.Repository(decision.Thread.Repository.HTMLURL, decision.Thread.Repository.FullName)
 		lines := []struct{ label, value string }{
-			{"URL", reporturl.Safe(decision.URL, decision.Thread.Repository.HTMLURL)}, {"Subject type", decision.Thread.Subject.Type},
+			{"URL", reporturl.Safe(decision.URL, repositoryURL)}, {"Subject type", decision.Thread.Subject.Type},
 			{"Repository", decision.Thread.Repository.FullName}, {"Notification reason", decision.Thread.Reason},
 			{"Proposed action", string(decision.Action)},
 		}

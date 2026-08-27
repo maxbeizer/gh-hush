@@ -29,3 +29,22 @@ func TestSafeSelectsFirstBrowserURLOrUnavailable(t *testing.T) {
 		})
 	}
 }
+
+func TestRepositoryUsesHTMLURLOrStrictGitHubDotComFallback(t *testing.T) {
+	tests := []struct {
+		name, htmlURL, fullName, want string
+	}{
+		{"HTML URL", "https://github.example/org/repo", "org/repo", "https://github.example/org/repo"},
+		{"missing HTML URL", "", "org/repo", "https://github.com/org/repo"},
+		{"API HTML URL", "https://api.github.com/repos/org/repo", "org/repo", "https://github.com/org/repo"},
+		{"invalid full name", "https://api.github.com/repos/org/repo", "org/repo/extra", "unavailable"},
+		{"unsafe full name", "", "org/re po", "unavailable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Repository(tt.htmlURL, tt.fullName); got != tt.want {
+				t.Fatalf("Repository()=%q want=%q", got, tt.want)
+			}
+		})
+	}
+}
