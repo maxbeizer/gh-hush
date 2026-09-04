@@ -1,7 +1,11 @@
 package config
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -33,6 +37,63 @@ func TestDefaultPath(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "relative")
 	if _, err := DefaultPath(); err == nil {
 		t.Fatal("expected relative path error")
+	}
+}
+
+func TestPublishedSchemaMatchesConfigTypes(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "config.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema schemaObject
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("parse config.schema.json: %v", err)
+	}
+	assertSchemaMatchesType(t, "config", schema, reflect.TypeOf(Config{}))
+}
+
+type schemaObject struct {
+	Description          string                  `json:"description"`
+	Properties           map[string]schemaObject `json:"properties"`
+	Required             []string                `json:"required"`
+	AdditionalProperties *bool                   `json:"additionalProperties"`
+}
+
+func assertSchemaMatchesType(t *testing.T, path string, schema schemaObject, typ reflect.Type) {
+	t.Helper()
+	if schema.AdditionalProperties == nil || *schema.AdditionalProperties {
+		t.Errorf("%s must reject additional properties", path)
+	}
+	var fields []string
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		name := strings.Split(field.Tag.Get("yaml"), ",")[0]
+		fields = append(fields, name)
+		property, ok := schema.Properties[name]
+		if !ok {
+			t.Errorf("%s.%s is missing from config.schema.json", path, name)
+			continue
+		}
+		if property.Description == "" {
+			t.Errorf("%s.%s has no schema description", path, name)
+		}
+		fieldType := field.Type
+		if fieldType.Kind() == reflect.Struct {
+			assertSchemaMatchesType(t, path+"."+name, property, fieldType)
+		}
+	}
+	sort.Strings(fields)
+	schemaFields := make([]string, 0, len(schema.Properties))
+	for name := range schema.Properties {
+		schemaFields = append(schemaFields, name)
+	}
+	sort.Strings(schemaFields)
+	sort.Strings(schema.Required)
+	if !reflect.DeepEqual(schemaFields, fields) {
+		t.Errorf("%s schema fields = %v, Go fields = %v", path, schemaFields, fields)
+	}
+	if !reflect.DeepEqual(schema.Required, fields) {
+		t.Errorf("%s required fields = %v, want %v", path, schema.Required, fields)
 	}
 }
 

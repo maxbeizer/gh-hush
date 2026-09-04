@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/maxbeizer/gh-hush/blob/main/config.schema.json",
+  "title": "gh-hush configuration",
+  "description": "Policy used by gh-hush to decide which GitHub notifications to keep and hush.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["user", "github_organization", "team_slugs", "keep", "hush"],
+  "properties": {
+    "user": {
+      "type": "string",
+      "description": "GitHub login that must match the account authenticated by gh.",
+      "pattern": "^(?!.*--)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
+    },
+    "github_organization": {
+      "type": "string",
+      "description": "Primary GitHub organization. Notifications outside it are protected when external_organization_issues is enabled.",
+      "pattern": "^(?!.*--)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
+    },
+    "team_slugs": {
+      "type": "array",
+      "description": "Teams used by team review and Discussion mention rules, in org/team-slug form. Each org must match github_organization; matching and uniqueness are case-insensitive.",
+      "items": {
+        "type": "string",
+        "pattern": "^(?![^/]*--)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]+$"
+      }
+    },
+    "keep": {
+      "type": "object",
+      "description": "Explicit protection rules. Every switch is required and may be disabled with false.",
+      "additionalProperties": false,
+      "required": [
+        "external_organization_issues",
+        "personally_mentioned",
+        "personally_assigned",
+        "individually_review_requested",
+        "active_team_review_requested_pull_requests",
+        "authored_by_user",
+        "team_mentioned_discussions"
+      ],
+      "properties": {
+        "external_organization_issues": {"type": "boolean", "description": "Keep notifications for all subject types in repositories outside github_organization."},
+        "personally_mentioned": {"type": "boolean", "description": "Keep notifications caused by a personal mention."},
+        "personally_assigned": {"type": "boolean", "description": "Keep Issues and pull requests currently assigned to user."},
+        "individually_review_requested": {"type": "boolean", "description": "Keep pull requests with a current review request for user."},
+        "active_team_review_requested_pull_requests": {"type": "boolean", "description": "Keep open pull requests with a current review request for a configured team."},
+        "authored_by_user": {"type": "boolean", "description": "Keep work authored by user."},
+        "team_mentioned_discussions": {"type": "boolean", "description": "Keep Discussions whose body or comment history mentions a configured team."}
+      }
+    },
+    "hush": {
+      "type": "object",
+      "description": "Catch-all action applied after keep rules.",
+      "additionalProperties": false,
+      "required": ["all_other_notifications"],
+      "properties": {
+        "all_other_notifications": {"const": true, "description": "Unsubscribe from and mark Done all eligible notifications not protected by a keep rule. Must be true."}
+      }
+    }
+  }
+}
