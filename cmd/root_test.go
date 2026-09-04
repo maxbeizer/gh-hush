@@ -20,13 +20,14 @@ import (
 const validConfigYAML = `
 user: octocat
 github_organization: github
-discussion_team_slugs:
+team_slugs:
   - github/notifications
 keep:
   external_organization_issues: true
   personally_mentioned: true
   personally_assigned: true
   individually_review_requested: true
+  active_team_review_requested_pull_requests: true
   authored_by_user: true
   team_mentioned_discussions: true
 hush:

@@ -30,6 +30,7 @@ type Subject struct {
 type Resource struct {
 	HTMLURL            string `json:"html_url"`
 	Body               string `json:"body"`
+	State              string `json:"state"`
 	User               User   `json:"user"`
 	Author             User   `json:"author"`
 	Assignees          []User `json:"assignees"`

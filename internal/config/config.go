@@ -34,22 +34,23 @@ func DefaultPath() (string, error) {
 
 // Config is the complete notification policy. Unknown YAML fields are rejected.
 type Config struct {
-	User                string   `yaml:"user"`
-	GitHubOrganization  string   `yaml:"github_organization"`
-	DiscussionTeamSlugs []string `yaml:"discussion_team_slugs"`
-	Keep                Keep     `yaml:"keep"`
-	Hush                struct {
+	User               string   `yaml:"user"`
+	GitHubOrganization string   `yaml:"github_organization"`
+	TeamSlugs          []string `yaml:"team_slugs"`
+	Keep               Keep     `yaml:"keep"`
+	Hush               struct {
 		AllOtherNotifications *bool `yaml:"all_other_notifications"`
 	} `yaml:"hush"`
 }
 
 type Keep struct {
-	ExternalOrganizationIssues  *bool `yaml:"external_organization_issues"`
-	PersonallyMentioned         *bool `yaml:"personally_mentioned"`
-	PersonallyAssigned          *bool `yaml:"personally_assigned"`
-	IndividuallyReviewRequested *bool `yaml:"individually_review_requested"`
-	AuthoredByUser              *bool `yaml:"authored_by_user"`
-	TeamMentionedDiscussions    *bool `yaml:"team_mentioned_discussions"`
+	ExternalOrganizationIssues            *bool `yaml:"external_organization_issues"`
+	PersonallyMentioned                   *bool `yaml:"personally_mentioned"`
+	PersonallyAssigned                    *bool `yaml:"personally_assigned"`
+	IndividuallyReviewRequested           *bool `yaml:"individually_review_requested"`
+	ActiveTeamReviewRequestedPullRequests *bool `yaml:"active_team_review_requested_pull_requests"`
+	AuthoredByUser                        *bool `yaml:"authored_by_user"`
+	TeamMentionedDiscussions              *bool `yaml:"team_mentioned_discussions"`
 }
 
 func Load(path string) (Config, []byte, error) {
@@ -93,13 +94,14 @@ func (c Config) Validate() error {
 		validationErrors = append(validationErrors, errors.New("github_organization must be a valid GitHub organization login"))
 	}
 	required := map[string]*bool{
-		"keep.external_organization_issues":  c.Keep.ExternalOrganizationIssues,
-		"keep.personally_mentioned":          c.Keep.PersonallyMentioned,
-		"keep.personally_assigned":           c.Keep.PersonallyAssigned,
-		"keep.individually_review_requested": c.Keep.IndividuallyReviewRequested,
-		"keep.authored_by_user":              c.Keep.AuthoredByUser,
-		"keep.team_mentioned_discussions":    c.Keep.TeamMentionedDiscussions,
-		"hush.all_other_notifications":       c.Hush.AllOtherNotifications,
+		"keep.external_organization_issues":               c.Keep.ExternalOrganizationIssues,
+		"keep.personally_mentioned":                       c.Keep.PersonallyMentioned,
+		"keep.personally_assigned":                        c.Keep.PersonallyAssigned,
+		"keep.individually_review_requested":              c.Keep.IndividuallyReviewRequested,
+		"keep.active_team_review_requested_pull_requests": c.Keep.ActiveTeamReviewRequestedPullRequests,
+		"keep.authored_by_user":                           c.Keep.AuthoredByUser,
+		"keep.team_mentioned_discussions":                 c.Keep.TeamMentionedDiscussions,
+		"hush.all_other_notifications":                    c.Hush.AllOtherNotifications,
 	}
 	for field, value := range required {
 		if value == nil {
@@ -110,19 +112,19 @@ func (c Config) Validate() error {
 		validationErrors = append(validationErrors, errors.New("hush.all_other_notifications must be true"))
 	}
 
-	seenTeams := make(map[string]struct{}, len(c.DiscussionTeamSlugs))
-	for _, team := range c.DiscussionTeamSlugs {
+	seenTeams := make(map[string]struct{}, len(c.TeamSlugs))
+	for _, team := range c.TeamSlugs {
 		parts := strings.Split(team, "/")
 		if len(parts) != 2 || !validGitHubLogin(parts[0]) || !teamSlugPattern.MatchString(parts[1]) {
-			validationErrors = append(validationErrors, fmt.Errorf("discussion_team_slugs entry %q must use org/team-slug form", team))
+			validationErrors = append(validationErrors, fmt.Errorf("team_slugs entry %q must use org/team-slug form", team))
 			continue
 		}
 		if !strings.EqualFold(parts[0], c.GitHubOrganization) {
-			validationErrors = append(validationErrors, fmt.Errorf("discussion_team_slugs entry %q must belong to github_organization %q", team, c.GitHubOrganization))
+			validationErrors = append(validationErrors, fmt.Errorf("team_slugs entry %q must belong to github_organization %q", team, c.GitHubOrganization))
 		}
 		key := strings.ToLower(team)
 		if _, exists := seenTeams[key]; exists {
-			validationErrors = append(validationErrors, fmt.Errorf("discussion_team_slugs contains duplicate %q", team))
+			validationErrors = append(validationErrors, fmt.Errorf("team_slugs contains duplicate %q", team))
 		}
 		seenTeams[key] = struct{}{}
 	}

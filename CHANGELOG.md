@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+### Added
+
+- Keep open pull requests with a current review request for a configured team while allowing closed or merged pull requests to proceed through normal hush policy.
+
+### Changed
+
+- Rename `discussion_team_slugs` to `team_slugs` because configured teams now apply to pull requests as well as Discussions.
+
 ## [0.1.5] - 2026-08-27
 
 ### Fixed
