@@ -177,6 +177,23 @@ func TestPublishedSchemaEnforcesRuntimeConstraints(t *testing.T) {
 	}
 }
 
+func TestLoadAddsAgentFixPrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	input := strings.Replace(validYAML, "team_slugs:", "discussion_team_slugs:", 1)
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	want := `AI prompt: In "` + path + `", rename discussion_team_slugs to team_slugs and add keep.active_team_review_requested_pull_requests as true or false.`
+	if !strings.Contains(err.Error(), want) {
+		t.Errorf("error %q does not contain %q", err, want)
+	}
+}
+
 func TestDecodeErrorPreservesAllProblemsAndAddsGuidance(t *testing.T) {
 	input := strings.Replace(validYAML, "team_slugs:", "discussion_team_slugs:", 1)
 	input = strings.Replace(input, "personally_mentioned: true", "personally_mentioned: enabled", 1)

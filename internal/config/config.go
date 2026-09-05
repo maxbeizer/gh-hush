@@ -63,7 +63,7 @@ func Load(path string) (Config, []byte, error) {
 	}
 	cfg, err := Parse(data)
 	if err != nil {
-		return Config{}, nil, fmt.Errorf("validate config %q: %w", path, err)
+		return Config{}, nil, fmt.Errorf("validate config %q: %w\nAI prompt: %s", path, err, configFixPrompt(path, err))
 	}
 	return cfg, data, nil
 }
@@ -135,6 +135,13 @@ func (c Config) Validate() error {
 		seenTeams[key] = struct{}{}
 	}
 	return errors.Join(validationErrors...)
+}
+
+func configFixPrompt(path string, err error) string {
+	if strings.Contains(err.Error(), `"discussion_team_slugs" was renamed to "team_slugs"`) {
+		return fmt.Sprintf("In %q, rename discussion_team_slugs to team_slugs and add keep.active_team_review_requested_pull_requests as true or false.", path)
+	}
+	return fmt.Sprintf("Fix the configuration errors above in %q, preserving the policy's intent.", path)
 }
 
 func configDecodeError(err error) error {
