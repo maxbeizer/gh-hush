@@ -154,7 +154,7 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 		decision.Rules = append(decision.Rules, model.Rule{ID: ruleIndividualReview, Evidence: fmt.Sprintf("%q appears in requested_reviewers; team requests alone do not match", e.cfg.User)})
 	}
 	if config.Enabled(e.cfg.Keep.ActiveTeamReviewRequestedPullRequests) && thread.Subject.Type == "PullRequest" && evidence.subject.State == "open" {
-		for _, team := range matchingRequestedTeams(e.cfg.TeamSlugs, evidence.subject.RequestedTeams) {
+		for _, team := range matchingRequestedTeams(e.cfg.TeamSlugs, evidence.subject.RequestedTeams, thread.Repository.FullName) {
 			decision.Rules = append(decision.Rules, model.Rule{ID: ruleActiveTeamReview, Evidence: fmt.Sprintf("open pull request currently requests review from @%s", team)})
 		}
 	}
@@ -213,12 +213,16 @@ func containsUser(users []model.User, login string) bool {
 	return false
 }
 
-func matchingRequestedTeams(configured []string, requested []model.Team) []string {
+func matchingRequestedTeams(configured []string, requested []model.Team, repository string) []string {
 	var matches []string
+	repositoryOrg := strings.SplitN(repository, "/", 2)[0]
 	for _, configuredTeam := range configured {
 		parts := strings.SplitN(configuredTeam, "/", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], repositoryOrg) {
+			continue
+		}
 		for _, requestedTeam := range requested {
-			if len(parts) == 2 && strings.EqualFold(parts[1], requestedTeam.Slug) {
+			if strings.EqualFold(parts[1], requestedTeam.Slug) {
 				matches = append(matches, configuredTeam)
 				break
 			}

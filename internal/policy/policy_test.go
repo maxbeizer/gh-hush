@@ -88,6 +88,16 @@ func TestTeamReviewRequestsOnlyProtectMatchingOpenPullRequests(t *testing.T) {
 	}
 }
 
+func TestTeamReviewRequestDoesNotMatchSameSlugInAnotherOrganization(t *testing.T) {
+	cfg := testConfig()
+	off := false
+	cfg.Keep.ExternalOrganizationIssues = &off
+	d := NewEvaluator(cfg, &testEvidenceSource{subject: model.Resource{State: "open", RequestedTeams: []model.Team{{Slug: "notifications"}}}}).Evaluate(context.Background(), thread("1", "other/repo", "PullRequest", "team_mention"))
+	if d.Action != model.ActionUnsubscribeAndMarkDone || hasRule(d, ruleActiveTeamReview) {
+		t.Fatalf("decision=%#v", d)
+	}
+}
+
 func TestUnavailablePullRequestStateIsConservativelyKept(t *testing.T) {
 	d := NewEvaluator(testConfig(), &testEvidenceSource{subject: model.Resource{RequestedTeams: []model.Team{{Slug: "notifications"}}}}).Evaluate(context.Background(), thread("1", "github/repo", "PullRequest", "team_mention"))
 	if d.Action != model.ActionKeep || !hasRule(d, ruleSafetyFailure) || d.EnrichmentError == "" {
