@@ -34,8 +34,8 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Command {
 	var configPath string
 	var dryRun, confirm, debug bool
-	resolveConfig := func() (config.Config, string, bool, error) {
-		provided := configPath != ""
+	resolveConfig := func(cmd *cobra.Command) (config.Config, string, bool, error) {
+		provided := cmd.Flags().Changed("config")
 		path := configPath
 		if !provided {
 			var err error
@@ -51,7 +51,7 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 		Use: "gh-hush", Short: "Explainable, policy-driven GitHub notification triage",
 		Version: Version, SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, _, provided, err := resolveConfig()
+			cfg, _, provided, err := resolveConfig(cmd)
 			if err != nil {
 				if !provided && errors.Is(err, os.ErrNotExist) {
 					return cmd.Help()
@@ -72,8 +72,8 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 		Use:   "validate-config",
 		Short: "Validate the configuration without contacting GitHub",
 		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			_, path, _, err := resolveConfig()
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, path, _, err := resolveConfig(cmd)
 			if err != nil {
 				return err
 			}

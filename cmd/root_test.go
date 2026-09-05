@@ -120,6 +120,15 @@ func TestValidateConfigDoesNotRunOperation(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRejectsExplicitEmptyPath(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"validate-config", "--config", ""})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), `read config ""`) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestValidateConfigReportsInvalidSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	if err := os.WriteFile(path, []byte("user: octocat\nunexpected: true\n"), 0600); err != nil {

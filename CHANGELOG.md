@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 ### Added
 
 - Keep open pull requests with a current review request for a configured team while allowing closed or merged pull requests to proceed through normal hush policy.
+- Publish a documented JSON Schema for configuration and add `gh hush validate-config` for validation without contacting GitHub.
 
 ### Changed
 

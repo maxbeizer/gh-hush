@@ -10,19 +10,25 @@
     "user": {
       "type": "string",
       "description": "GitHub login that must match the account authenticated by gh.",
-      "pattern": "^(?!.*--)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
+      "maxLength": 39,
+      "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
     },
     "github_organization": {
       "type": "string",
       "description": "Primary GitHub organization. Notifications outside it are protected when external_organization_issues is enabled.",
-      "pattern": "^(?!.*--)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$"
+      "maxLength": 39,
+      "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
     },
     "team_slugs": {
       "type": "array",
       "description": "Teams used by team review and Discussion mention rules, in org/team-slug form. Each org must match github_organization; matching and uniqueness are case-insensitive.",
+      "uniqueItems": true,
       "items": {
         "type": "string",
-        "pattern": "^(?![^/]*--)[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/[A-Za-z0-9_.-]+$"
+        "allOf": [
+          {"pattern": "^[A-Za-z0-9-]{1,39}/"},
+          {"pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9_.-]+$"}
+        ]
       }
     },
     "keep": {
@@ -54,7 +60,7 @@
       "additionalProperties": false,
       "required": ["all_other_notifications"],
       "properties": {
-        "all_other_notifications": {"const": true, "description": "Unsubscribe from and mark Done all eligible notifications not protected by a keep rule. Must be true."}
+        "all_other_notifications": {"type": "boolean", "const": true, "description": "Unsubscribe from and mark Done all eligible notifications not protected by a keep rule. Must be true."}
       }
     }
   }
