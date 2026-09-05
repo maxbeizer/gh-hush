@@ -17,6 +17,7 @@ const (
 	rulePersonalMention      = "keep.personal_mention"
 	rulePersonalAssign       = "keep.personal_assignment"
 	ruleIndividualReview     = "keep.individual_review_request"
+	ruleActiveTeamReview     = "keep.active_team_review_request"
 	ruleUserAuthored         = "keep.user_authored_work"
 	ruleDiscussionTeam       = "keep.discussion_team_mention"
 	ruleSafetyFailure        = "safety.keep_on_enrichment_failure"
@@ -87,6 +88,7 @@ func (e *Evaluator) evaluate(ctx context.Context, thread model.Notification, res
 
 type evidenceRequirements struct {
 	subject            bool
+	pullRequestState   bool
 	discussionComments bool
 }
 
@@ -122,10 +124,14 @@ func (e *Evaluator) evidenceRequirements(thread model.Notification) evidenceRequ
 	if config.Enabled(e.cfg.Keep.IndividuallyReviewRequested) && t == "PullRequest" {
 		requirements.subject = true
 	}
+	if config.Enabled(e.cfg.Keep.ActiveTeamReviewRequestedPullRequests) && len(e.cfg.TeamSlugs) > 0 && t == "PullRequest" {
+		requirements.subject = true
+		requirements.pullRequestState = true
+	}
 	if config.Enabled(e.cfg.Keep.AuthoredByUser) && thread.Reason != "author" {
 		requirements.subject = true
 	}
-	if config.Enabled(e.cfg.Keep.TeamMentionedDiscussions) && len(e.cfg.DiscussionTeamSlugs) > 0 && t == "Discussion" {
+	if config.Enabled(e.cfg.Keep.TeamMentionedDiscussions) && len(e.cfg.TeamSlugs) > 0 && t == "Discussion" {
 		requirements.subject = true
 		requirements.discussionComments = true
 	}
@@ -147,6 +153,11 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 	if config.Enabled(e.cfg.Keep.IndividuallyReviewRequested) && containsUser(evidence.subject.RequestedReviewers, e.cfg.User) {
 		decision.Rules = append(decision.Rules, model.Rule{ID: ruleIndividualReview, Evidence: fmt.Sprintf("%q appears in requested_reviewers; team requests alone do not match", e.cfg.User)})
 	}
+	if config.Enabled(e.cfg.Keep.ActiveTeamReviewRequestedPullRequests) && thread.Subject.Type == "PullRequest" && evidence.subject.State == "open" {
+		for _, team := range matchingRequestedTeams(e.cfg.TeamSlugs, evidence.subject.RequestedTeams, thread.Repository.FullName) {
+			decision.Rules = append(decision.Rules, model.Rule{ID: ruleActiveTeamReview, Evidence: fmt.Sprintf("open pull request currently requests review from @%s", team)})
+		}
+	}
 	if config.Enabled(e.cfg.Keep.AuthoredByUser) && (thread.Reason == "author" || strings.EqualFold(resourceAuthor(evidence.subject), e.cfg.User)) {
 		decision.Rules = append(decision.Rules, model.Rule{ID: ruleUserAuthored, Evidence: fmt.Sprintf("%q authored the notification subject", e.cfg.User)})
 	}
@@ -155,7 +166,7 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 		for _, comment := range evidence.discussionComments {
 			bodies = append(bodies, comment.Body)
 		}
-		for _, team := range matchingTeamMentions(e.cfg.DiscussionTeamSlugs, bodies...) {
+		for _, team := range matchingTeamMentions(e.cfg.TeamSlugs, bodies...) {
 			decision.Rules = append(decision.Rules, model.Rule{ID: ruleDiscussionTeam, Evidence: fmt.Sprintf("discussion body or complete comment history contains exact team mention @%s", team)})
 		}
 	}
@@ -166,6 +177,9 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 	var evidenceErrors []error
 	if requirements.subject && evidence.subjectErr != nil {
 		evidenceErrors = append(evidenceErrors, evidence.subjectErr)
+	}
+	if requirements.pullRequestState && evidence.subjectErr == nil && evidence.subject.State != "open" && evidence.subject.State != "closed" {
+		evidenceErrors = append(evidenceErrors, fmt.Errorf("pull request state %q is unavailable or unsupported", evidence.subject.State))
 	}
 	if requirements.discussionComments && evidence.discussionCommentsErr != nil {
 		evidenceErrors = append(evidenceErrors, evidence.discussionCommentsErr)
@@ -197,6 +211,24 @@ func containsUser(users []model.User, login string) bool {
 		}
 	}
 	return false
+}
+
+func matchingRequestedTeams(configured []string, requested []model.Team, repository string) []string {
+	var matches []string
+	repositoryOrg := strings.SplitN(repository, "/", 2)[0]
+	for _, configuredTeam := range configured {
+		parts := strings.SplitN(configuredTeam, "/", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], repositoryOrg) {
+			continue
+		}
+		for _, requestedTeam := range requested {
+			if strings.EqualFold(parts[1], requestedTeam.Slug) {
+				matches = append(matches, configuredTeam)
+				break
+			}
+		}
+	}
+	return matches
 }
 
 func matchingTeamMentions(teams []string, bodies ...string) []string {

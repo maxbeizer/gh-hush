@@ -79,7 +79,7 @@ The default path is `$XDG_CONFIG_HOME/gh-hush/config.yml`, or `~/.config/gh-hush
 user: YOUR-GITHUB-LOGIN
 github_organization: YOUR-PRIMARY-ORGANIZATION
 
-discussion_team_slugs:
+team_slugs:
   - YOUR-PRIMARY-ORGANIZATION/YOUR-TEAM
 
 keep:
@@ -87,6 +87,7 @@ keep:
   personally_mentioned: true
   personally_assigned: true
   individually_review_requested: true
+  active_team_review_requested_pull_requests: true
   authored_by_user: true
   team_mentioned_discussions: true
 
@@ -101,11 +102,12 @@ Keep rules protect:
 1. notifications from repositories outside `github_organization`, for every subject type;
 2. `reason: mention`;
 3. `reason: assign` or a current personal assignment;
-4. a current individual pull-request review request (team-only requests do not match);
-5. work authored by `user`; and
-6. Discussions containing an exact configured team mention in the body or anywhere in the complete paginated comment history.
+4. a current individual pull-request review request;
+5. an open pull request with a current review request for a configured team;
+6. work authored by `user`; and
+7. Discussions containing an exact configured team mention in the body or anywhere in the complete paginated comment history.
 
-Required evidence failures conservatively safety-keep a notification. Discussion team mentions found in historical comments continue to protect the Discussion until it is manually resolved.
+Closed and merged pull requests do not match the team-review keep rule and proceed through normal policy evaluation. Required evidence failures, including an unavailable or unrecognized pull-request state, conservatively safety-keep a notification. Discussion team mentions found in historical comments continue to protect the Discussion until it is manually resolved.
 
 Only `Issue`, `PullRequest`, `Discussion`, `Commit`, `Release`, and `CheckSuite` are eligible for the catch-all hush action. Unsupported, unknown, sensitive, administrative, and security-related subject types are safety-kept.
 

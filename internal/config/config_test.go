@@ -9,13 +9,14 @@ import (
 const validYAML = `
 user: octocat
 github_organization: github
-discussion_team_slugs:
+team_slugs:
   - github/notifications
 keep:
   external_organization_issues: true
   personally_mentioned: true
   personally_assigned: true
   individually_review_requested: true
+  active_team_review_requested_pull_requests: true
   authored_by_user: true
   team_mentioned_discussions: true
 hush:
@@ -43,6 +44,7 @@ func TestParseValidationAndHardSchemaBreak(t *testing.T) {
 		{"output removed", validYAML + "output:\n  default_mode: dry_run\n", "field output not found"},
 		{"unknown", validYAML + "unexpected: true\n", "field unexpected not found"},
 		{"required keep flag", strings.Replace(validYAML, "  authored_by_user: true\n", "", 1), "keep.authored_by_user is required"},
+		{"required active team PR flag", strings.Replace(validYAML, "  active_team_review_requested_pull_requests: true\n", "", 1), "keep.active_team_review_requested_pull_requests is required"},
 		{"required hush", strings.Replace(validYAML, "  all_other_notifications: true\n", "", 1), "hush.all_other_notifications is required"},
 		{"hush must be true", strings.Replace(validYAML, "all_other_notifications: true", "all_other_notifications: false", 1), "hush.all_other_notifications must be true"},
 		{"bad user", strings.Replace(validYAML, "user: octocat", "user: octo--cat", 1), "valid GitHub login"},

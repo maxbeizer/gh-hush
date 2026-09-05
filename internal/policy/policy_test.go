@@ -53,7 +53,8 @@ func TestKeepRules(t *testing.T) {
 		{"mention", thread("1", "github/repo", "Issue", "mention"), model.Resource{}, rulePersonalMention},
 		{"assignment reason", thread("1", "github/repo", "Issue", "assign"), model.Resource{}, rulePersonalAssign},
 		{"current assignee", thread("1", "github/repo", "Issue", "subscribed"), model.Resource{Assignees: []model.User{{Login: "octocat"}}}, rulePersonalAssign},
-		{"individual review", thread("1", "github/repo", "PullRequest", "review_requested"), model.Resource{RequestedReviewers: []model.User{{Login: "octocat"}}}, ruleIndividualReview},
+		{"individual review", thread("1", "github/repo", "PullRequest", "review_requested"), model.Resource{State: "closed", RequestedReviewers: []model.User{{Login: "octocat"}}}, ruleIndividualReview},
+		{"active team review", thread("1", "github/repo", "PullRequest", "team_mention"), model.Resource{State: "open", RequestedTeams: []model.Team{{Slug: "notifications"}}}, ruleActiveTeamReview},
 		{"author reason", thread("1", "github/repo", "Release", "author"), model.Resource{}, ruleUserAuthored},
 		{"author response", thread("1", "github/repo", "Commit", "subscribed"), model.Resource{Author: model.User{Login: "octocat"}}, ruleUserAuthored},
 	}
@@ -64,6 +65,43 @@ func TestKeepRules(t *testing.T) {
 				t.Fatalf("decision=%#v", d)
 			}
 		})
+	}
+}
+
+func TestTeamReviewRequestsOnlyProtectMatchingOpenPullRequests(t *testing.T) {
+	tests := []struct {
+		name    string
+		item    model.Notification
+		subject model.Resource
+	}{
+		{"closed pull request", thread("1", "github/repo", "PullRequest", "team_mention"), model.Resource{State: "closed", RequestedTeams: []model.Team{{Slug: "notifications"}}}},
+		{"unconfigured team", thread("1", "github/repo", "PullRequest", "team_mention"), model.Resource{State: "open", RequestedTeams: []model.Team{{Slug: "other"}}}},
+		{"non-pull-request subject", thread("1", "github/repo", "Issue", "subscribed"), model.Resource{State: "open", RequestedTeams: []model.Team{{Slug: "notifications"}}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewEvaluator(testConfig(), &testEvidenceSource{subject: tt.subject}).Evaluate(context.Background(), tt.item)
+			if d.Action != model.ActionUnsubscribeAndMarkDone || hasRule(d, ruleActiveTeamReview) {
+				t.Fatalf("decision=%#v", d)
+			}
+		})
+	}
+}
+
+func TestTeamReviewRequestDoesNotMatchSameSlugInAnotherOrganization(t *testing.T) {
+	cfg := testConfig()
+	off := false
+	cfg.Keep.ExternalOrganizationIssues = &off
+	d := NewEvaluator(cfg, &testEvidenceSource{subject: model.Resource{State: "open", RequestedTeams: []model.Team{{Slug: "notifications"}}}}).Evaluate(context.Background(), thread("1", "other/repo", "PullRequest", "team_mention"))
+	if d.Action != model.ActionUnsubscribeAndMarkDone || hasRule(d, ruleActiveTeamReview) {
+		t.Fatalf("decision=%#v", d)
+	}
+}
+
+func TestUnavailablePullRequestStateIsConservativelyKept(t *testing.T) {
+	d := NewEvaluator(testConfig(), &testEvidenceSource{subject: model.Resource{RequestedTeams: []model.Team{{Slug: "notifications"}}}}).Evaluate(context.Background(), thread("1", "github/repo", "PullRequest", "team_mention"))
+	if d.Action != model.ActionKeep || !hasRule(d, ruleSafetyFailure) || d.EnrichmentError == "" {
+		t.Fatalf("decision=%#v", d)
 	}
 }
 
@@ -293,7 +331,7 @@ func thread(id, repo, typ, reason string) model.Notification {
 
 func testConfig() config.Config {
 	on := true
-	cfg := config.Config{User: "octocat", GitHubOrganization: "github", DiscussionTeamSlugs: []string{"github/notifications"}, Keep: config.Keep{ExternalOrganizationIssues: &on, PersonallyMentioned: &on, PersonallyAssigned: &on, IndividuallyReviewRequested: &on, AuthoredByUser: &on, TeamMentionedDiscussions: &on}}
+	cfg := config.Config{User: "octocat", GitHubOrganization: "github", TeamSlugs: []string{"github/notifications"}, Keep: config.Keep{ExternalOrganizationIssues: &on, PersonallyMentioned: &on, PersonallyAssigned: &on, IndividuallyReviewRequested: &on, ActiveTeamReviewRequestedPullRequests: &on, AuthoredByUser: &on, TeamMentionedDiscussions: &on}}
 	cfg.Hush.AllOtherNotifications = &on
 	return cfg
 }
@@ -302,6 +340,7 @@ func withEvidenceRulesDisabled(cfg config.Config) config.Config {
 	off := false
 	cfg.Keep.PersonallyAssigned = &off
 	cfg.Keep.IndividuallyReviewRequested = &off
+	cfg.Keep.ActiveTeamReviewRequestedPullRequests = &off
 	cfg.Keep.AuthoredByUser = &off
 	cfg.Keep.TeamMentionedDiscussions = &off
 	return cfg
