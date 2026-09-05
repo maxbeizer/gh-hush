@@ -34,19 +34,24 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Command {
 	var configPath string
 	var dryRun, confirm, debug bool
+	resolveConfig := func(cmd *cobra.Command) (config.Config, string, bool, error) {
+		provided := cmd.Flags().Changed("config")
+		path := configPath
+		if !provided {
+			var err error
+			path, err = config.DefaultPath()
+			if err != nil {
+				return config.Config{}, "", false, fmt.Errorf("resolve default config path: %w", err)
+			}
+		}
+		cfg, _, err := config.Load(path)
+		return cfg, path, provided, err
+	}
 	rootCmd := &cobra.Command{
 		Use: "gh-hush", Short: "Explainable, policy-driven GitHub notification triage",
 		Version: Version, SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			provided := cmd.Flags().Changed("config")
-			if !provided {
-				var err error
-				configPath, err = config.DefaultPath()
-				if err != nil {
-					return fmt.Errorf("resolve default config path: %w", err)
-				}
-			}
-			cfg, _, err := config.Load(configPath)
+			cfg, _, provided, err := resolveConfig(cmd)
 			if err != nil {
 				if !provided && errors.Is(err, os.ErrNotExist) {
 					return cmd.Help()
@@ -58,11 +63,24 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 	}
 	rootCmd.SetOut(stdout)
 	rootCmd.SetErr(stderr)
-	rootCmd.Flags().StringVar(&configPath, "config", "", "override the default user-owned YAML policy path")
+	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "override the default user-owned YAML policy path")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "classify notifications without prompting or mutating GitHub")
 	rootCmd.Flags().BoolVar(&confirm, "confirm", false, "unsubscribe from and mark proposed notifications Done without prompting")
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "write request and workflow diagnostics to stderr")
 	rootCmd.MarkFlagsMutuallyExclusive("dry-run", "confirm")
+	rootCmd.AddCommand(&cobra.Command{
+		Use:   "validate-config",
+		Short: "Validate the configuration without contacting GitHub",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, path, _, err := resolveConfig(cmd)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(stdout, "Configuration is valid: %s\n", path)
+			return err
+		},
+	})
 	return rootCmd
 }
 

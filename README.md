@@ -75,6 +75,15 @@ Marking Done removes the current notification from the inbox; it is not the same
 
 The default path is `$XDG_CONFIG_HOME/gh-hush/config.yml`, or `~/.config/gh-hush/config.yml` when `XDG_CONFIG_HOME` is unset. Override it with `--config PATH`.
 
+Every normal run validates the complete configuration before contacting GitHub and exits with a descriptive error if it is invalid. To check it independently, run:
+
+```bash
+gh hush validate-config
+gh hush validate-config --config PATH
+```
+
+The machine-readable [JSON Schema](config.schema.json) documents every field and can be configured in editors that support YAML schemas. A synchronization test fails when the Go configuration type and the published schema differ, so contributors must update both together.
+
 ```yaml
 user: YOUR-GITHUB-LOGIN
 github_organization: YOUR-PRIMARY-ORGANIZATION

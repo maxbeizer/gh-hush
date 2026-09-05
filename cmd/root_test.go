@@ -101,6 +101,46 @@ func TestDebugFlagIsOptIn(t *testing.T) {
 	}
 }
 
+func TestValidateConfigDoesNotRunOperation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(validConfigYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	command := newRootCommand(&out, io.Discard, func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool, bool) error {
+		t.Fatal("run operation should not be called")
+		return nil
+	})
+	command.SetArgs([]string{"validate-config", "--config", path})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Configuration is valid: "+path) {
+		t.Fatalf("output=%q", out.String())
+	}
+}
+
+func TestValidateConfigRejectsExplicitEmptyPath(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"validate-config", "--config", ""})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), `read config ""`) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestValidateConfigReportsInvalidSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte("user: octocat\nunexpected: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"validate-config", "--config", path})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "field unexpected not found") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestDryRunAndConfirmAreMutuallyExclusive(t *testing.T) {
 	command := NewRootCommand(io.Discard, io.Discard)
 	command.SetArgs([]string{"--dry-run", "--confirm"})
