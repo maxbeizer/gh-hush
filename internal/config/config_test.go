@@ -177,13 +177,39 @@ func TestPublishedSchemaEnforcesRuntimeConstraints(t *testing.T) {
 	}
 }
 
+func TestDecodeErrorPreservesAllProblemsAndAddsGuidance(t *testing.T) {
+	input := strings.Replace(validYAML, "team_slugs:", "discussion_team_slugs:", 1)
+	input = strings.Replace(input, "personally_mentioned: true", "personally_mentioned: enabled", 1)
+	input += "unexpected: true\n"
+
+	_, err := Parse([]byte(input))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	message := err.Error()
+	for _, want := range []string{
+		`"discussion_team_slugs" was renamed to "team_slugs" in v0.2.0`,
+		`cannot unmarshal !!str`,
+		`unknown configuration field "unexpected"`,
+		configSchemaURL,
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("error %q does not contain %q", message, want)
+		}
+	}
+	if strings.Contains(message, "type config.Config") {
+		t.Errorf("error exposes Go implementation type: %q", message)
+	}
+}
+
 func TestParseValidationAndHardSchemaBreak(t *testing.T) {
 	tests := []struct{ name, input, want string }{
 		{"valid", validYAML, ""},
-		{"old unsubscribe rejected", strings.Replace(validYAML, "hush:", "unsubscribe:", 1), "field unsubscribe not found"},
-		{"run mode removed", validYAML + "run_mode: ad_hoc\n", "field run_mode not found"},
-		{"output removed", validYAML + "output:\n  default_mode: dry_run\n", "field output not found"},
-		{"unknown", validYAML + "unexpected: true\n", "field unexpected not found"},
+		{"v0.2 migration guidance", strings.Replace(validYAML, "team_slugs:", "discussion_team_slugs:", 1), `"discussion_team_slugs" was renamed to "team_slugs" in v0.2.0`},
+		{"old unsubscribe rejected", strings.Replace(validYAML, "hush:", "unsubscribe:", 1), `"unsubscribe" was replaced by "hush"`},
+		{"run mode removed", validYAML + "run_mode: ad_hoc\n", `"run_mode" is no longer supported`},
+		{"output removed", validYAML + "output:\n  default_mode: dry_run\n", `"output" is no longer supported`},
+		{"unknown", validYAML + "unexpected: true\n", `unknown configuration field "unexpected"`},
 		{"required keep flag", strings.Replace(validYAML, "  authored_by_user: true\n", "", 1), "keep.authored_by_user is required"},
 		{"required active team PR flag", strings.Replace(validYAML, "  active_team_review_requested_pull_requests: true\n", "", 1), "keep.active_team_review_requested_pull_requests is required"},
 		{"required hush", strings.Replace(validYAML, "  all_other_notifications: true\n", "", 1), "hush.all_other_notifications is required"},

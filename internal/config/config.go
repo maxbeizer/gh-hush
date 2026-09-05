@@ -14,9 +14,12 @@ import (
 )
 
 var (
-	loginPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
-	teamSlugPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	loginPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+	teamSlugPattern     = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	unknownFieldPattern = regexp.MustCompile(`^line ([0-9]+): field ([^ ]+) not found in type .+$`)
 )
+
+const configSchemaURL = "https://github.com/maxbeizer/gh-hush/blob/main/config.schema.json"
 
 func DefaultPath() (string, error) {
 	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
@@ -70,7 +73,7 @@ func Parse(data []byte) (Config, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
-		return Config{}, fmt.Errorf("decode YAML: %w", err)
+		return Config{}, configDecodeError(err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); err != io.EOF {
@@ -93,19 +96,22 @@ func (c Config) Validate() error {
 	if !validGitHubLogin(c.GitHubOrganization) {
 		validationErrors = append(validationErrors, errors.New("github_organization must be a valid GitHub organization login"))
 	}
-	required := map[string]*bool{
-		"keep.external_organization_issues":               c.Keep.ExternalOrganizationIssues,
-		"keep.personally_mentioned":                       c.Keep.PersonallyMentioned,
-		"keep.personally_assigned":                        c.Keep.PersonallyAssigned,
-		"keep.individually_review_requested":              c.Keep.IndividuallyReviewRequested,
-		"keep.active_team_review_requested_pull_requests": c.Keep.ActiveTeamReviewRequestedPullRequests,
-		"keep.authored_by_user":                           c.Keep.AuthoredByUser,
-		"keep.team_mentioned_discussions":                 c.Keep.TeamMentionedDiscussions,
-		"hush.all_other_notifications":                    c.Hush.AllOtherNotifications,
+	required := []struct {
+		name  string
+		value *bool
+	}{
+		{"keep.external_organization_issues", c.Keep.ExternalOrganizationIssues},
+		{"keep.personally_mentioned", c.Keep.PersonallyMentioned},
+		{"keep.personally_assigned", c.Keep.PersonallyAssigned},
+		{"keep.individually_review_requested", c.Keep.IndividuallyReviewRequested},
+		{"keep.active_team_review_requested_pull_requests", c.Keep.ActiveTeamReviewRequestedPullRequests},
+		{"keep.authored_by_user", c.Keep.AuthoredByUser},
+		{"keep.team_mentioned_discussions", c.Keep.TeamMentionedDiscussions},
+		{"hush.all_other_notifications", c.Hush.AllOtherNotifications},
 	}
-	for field, value := range required {
-		if value == nil {
-			validationErrors = append(validationErrors, fmt.Errorf("%s is required", field))
+	for _, field := range required {
+		if field.value == nil {
+			validationErrors = append(validationErrors, fmt.Errorf("%s is required", field.name))
 		}
 	}
 	if c.Hush.AllOtherNotifications != nil && !*c.Hush.AllOtherNotifications {
@@ -129,6 +135,34 @@ func (c Config) Validate() error {
 		seenTeams[key] = struct{}{}
 	}
 	return errors.Join(validationErrors...)
+}
+
+func configDecodeError(err error) error {
+	var typeErr *yaml.TypeError
+	if !errors.As(err, &typeErr) {
+		return fmt.Errorf("decode YAML: %w", err)
+	}
+
+	problems := make([]string, 0, len(typeErr.Errors))
+	for _, problem := range typeErr.Errors {
+		match := unknownFieldPattern.FindStringSubmatch(problem)
+		if match == nil {
+			problems = append(problems, problem)
+			continue
+		}
+		line, field := match[1], match[2]
+		switch field {
+		case "discussion_team_slugs":
+			problems = append(problems, fmt.Sprintf(`line %s: "discussion_team_slugs" was renamed to "team_slugs" in v0.2.0; also add "active_team_review_requested_pull_requests: true" (or false) under "keep"`, line))
+		case "unsubscribe":
+			problems = append(problems, fmt.Sprintf(`line %s: "unsubscribe" was replaced by "hush"`, line))
+		case "run_mode", "output":
+			problems = append(problems, fmt.Sprintf(`line %s: %q is no longer supported and must be removed`, line, field))
+		default:
+			problems = append(problems, fmt.Sprintf(`line %s: unknown configuration field %q; see %s`, line, field, configSchemaURL))
+		}
+	}
+	return fmt.Errorf("decode YAML:\n  %s", strings.Join(problems, "\n  "))
 }
 
 func validGitHubLogin(login string) bool {

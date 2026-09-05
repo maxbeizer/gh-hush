@@ -136,7 +136,7 @@ func TestValidateConfigReportsInvalidSchema(t *testing.T) {
 	}
 	command := NewRootCommand(io.Discard, io.Discard)
 	command.SetArgs([]string{"validate-config", "--config", path})
-	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "field unexpected not found") {
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), `unknown configuration field "unexpected"`) {
 		t.Fatalf("error=%v", err)
 	}
 }

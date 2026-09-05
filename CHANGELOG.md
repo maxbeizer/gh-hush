@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+### Fixed
+
+- Report all YAML configuration problems together with actionable guidance for unknown, removed, and renamed fields, including the required v0.2.0 migration.
+
 ## [0.2.0] - 2026-09-05
 
 ### Added
