@@ -75,6 +75,20 @@ Marking Done removes the current notification from the inbox; it is not the same
 
 The default path is `$XDG_CONFIG_HOME/gh-hush/config.yml`, or `~/.config/gh-hush/config.yml` when `XDG_CONFIG_HOME` is unset. Override it with `--config PATH`.
 
+### Upgrading from v0.2.x
+
+No configuration migration is required. Existing valid v0.2.x configurations remain valid in v0.3.x because `watched_repositories` is optional and defaults to no watched repositories.
+
+Upgrade the extension, validate the existing configuration, and preview the resulting decisions before applying anything:
+
+```bash
+gh extension upgrade gh-hush
+gh hush validate-config
+gh hush --dry-run
+```
+
+If you use a non-default configuration path, pass `--config PATH` to the validation and preview commands. `init-config` is intended for new installations and refuses to overwrite an existing file. To opt into watched-repository protection after upgrading, add the desired entries under [`watched_repositories`](#watched-repositories).
+
 On the first run, create a valid conservative starter configuration with your explicit identity values:
 
 ```bash
