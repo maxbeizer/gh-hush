@@ -145,7 +145,7 @@ func TestEvidenceAdapterFetchesSubjectAndCompletePaginatedDiscussionHistory(t *t
 		mu.Unlock()
 		switch {
 		case r.URL.Path == "/repos/github/repo/discussions/7":
-			_, _ = w.Write([]byte(`{"body":"discussion"}`))
+			_, _ = w.Write([]byte(`{"body":"discussion","state":"locked","state_reason":"resolved"}`))
 		case r.URL.Query().Get("page") == "2":
 			_, _ = w.Write([]byte(`[{"body":"historical @github/notifications"}]`))
 		default:
@@ -158,7 +158,7 @@ func TestEvidenceAdapterFetchesSubjectAndCompletePaginatedDiscussionHistory(t *t
 	item := model.Notification{Subject: model.Subject{Type: "Discussion", URL: server.URL + "/repos/github/repo/discussions/7"}}
 	subject, subjectErr := client.FetchSubject(context.Background(), item)
 	comments, commentsErr := client.FetchDiscussionComments(context.Background(), item)
-	if subjectErr != nil || commentsErr != nil || subject.Body != "discussion" || len(comments) != 2 {
+	if subjectErr != nil || commentsErr != nil || subject.Body != "discussion" || subject.State != "locked" || subject.StateReason == nil || *subject.StateReason != "resolved" || len(comments) != 2 {
 		t.Fatalf("subject=%+v subjectErr=%v comments=%+v commentsErr=%v", subject, subjectErr, comments, commentsErr)
 	}
 	if comments[1].Body != "historical @github/notifications" {

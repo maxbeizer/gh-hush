@@ -196,7 +196,7 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 		switch {
 		case config.Enabled(watched.AllNotifications):
 			decision.Rules = append(decision.Rules, model.Rule{ID: ruleWatchedRepository, Evidence: fmt.Sprintf("watched repository %q keeps all notifications", thread.Repository.FullName)})
-		case config.Enabled(watchedSubjectCapability(watched, thread.Subject.Type)) && evidence.subject.State == "open":
+		case config.Enabled(watchedSubjectCapability(watched, thread.Subject.Type)) && watchedSubjectIsOpen(thread.Subject.Type, evidence.subject):
 			decision.Rules = append(decision.Rules, model.Rule{ID: ruleWatchedRepository, Evidence: fmt.Sprintf("watched repository %q keeps open %s subjects", thread.Repository.FullName, thread.Subject.Type)})
 		}
 	}
@@ -211,7 +211,7 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 	if requirements.pullRequestState && evidence.subjectErr == nil && evidence.subject.State != "open" && evidence.subject.State != "closed" {
 		evidenceErrors = append(evidenceErrors, fmt.Errorf("pull request state %q is unavailable or unsupported", evidence.subject.State))
 	}
-	if requirements.watchedSubjectState && !requirements.pullRequestState && evidence.subjectErr == nil && evidence.subject.State != "open" && evidence.subject.State != "closed" {
+	if requirements.watchedSubjectState && !requirements.pullRequestState && evidence.subjectErr == nil && !watchedSubjectStateIsKnown(thread.Subject.Type, evidence.subject) {
 		evidenceErrors = append(evidenceErrors, fmt.Errorf("watched repository subject state %q is unavailable or unsupported", evidence.subject.State))
 	}
 	if requirements.discussionComments && evidence.discussionCommentsErr != nil {
@@ -228,6 +228,23 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 	decision.Action = model.ActionUnsubscribeAndMarkDone
 	decision.Rules = []model.Rule{{ID: ruleAllOther, Evidence: "no enabled keep or safety rule matched after successful evaluation"}}
 	return decision
+}
+
+func watchedSubjectIsOpen(subjectType string, subject model.Resource) bool {
+	if subject.State == "open" {
+		return true
+	}
+	// GitHub's REST API reports "locked" instead of open/closed for a locked
+	// Discussion. state_reason remains nil when it is open and is populated when
+	// it was closed, which preserves the configured "not closed" semantics.
+	return subjectType == "Discussion" && subject.State == "locked" && subject.StateReason == nil
+}
+
+func watchedSubjectStateIsKnown(subjectType string, subject model.Resource) bool {
+	if subject.State == "open" || subject.State == "closed" {
+		return true
+	}
+	return subjectType == "Discussion" && subject.State == "locked"
 }
 
 func resourceAuthor(resource model.Resource) string {

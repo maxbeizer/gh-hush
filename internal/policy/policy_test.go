@@ -303,6 +303,9 @@ func TestWatchedRepositoryKeepsConfiguredSubjects(t *testing.T) {
 		{"merged pull request", config.WatchedRepository{OpenPullRequests: &on}, thread("1", "github/watched", "PullRequest", "subscribed"), model.Resource{State: "closed"}, false},
 		{"open issue", config.WatchedRepository{OpenIssues: &on}, thread("1", "github/watched", "Issue", "subscribed"), model.Resource{State: "open"}, true},
 		{"open discussion", config.WatchedRepository{OpenDiscussions: &on}, thread("1", "github/watched", "Discussion", "subscribed"), model.Resource{State: "open"}, true},
+		{"open locked discussion", config.WatchedRepository{OpenDiscussions: &on}, thread("1", "github/watched", "Discussion", "subscribed"), model.Resource{State: "locked"}, true},
+		{"closed discussion", config.WatchedRepository{OpenDiscussions: &on}, thread("1", "github/watched", "Discussion", "subscribed"), model.Resource{State: "closed"}, false},
+		{"closed locked discussion", config.WatchedRepository{OpenDiscussions: &on}, thread("1", "github/watched", "Discussion", "subscribed"), model.Resource{State: "locked", StateReason: stringPointer("resolved")}, false},
 		{"disabled subject type", config.WatchedRepository{OpenIssues: &on}, thread("1", "github/watched", "PullRequest", "subscribed"), model.Resource{State: "open"}, false},
 		{"unwatched repository", config.WatchedRepository{AllNotifications: &on}, thread("1", "github/other", "Issue", "subscribed"), model.Resource{State: "open"}, false},
 	}
@@ -379,6 +382,8 @@ func (s *testEvidenceSource) FetchDiscussionComments(ctx context.Context, _ mode
 	}
 	return s.comments, s.commentsErr
 }
+
+func stringPointer(value string) *string { return &value }
 
 func hasRule(d model.Decision, id string) bool {
 	for _, r := range d.Rules {

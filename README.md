@@ -146,7 +146,6 @@ Keep rules protect:
 
 Watched repositories are strictly additive: a match keeps the notification, and a non-match falls through to the keep rules above unchanged. When a capability needs the subject's state and that state is unavailable or unrecognized, the notification is conservatively safety-kept.
 
-
 Closed and merged pull requests do not match the team-review keep rule and proceed through normal policy evaluation. Required evidence failures, including an unavailable or unrecognized pull-request state, conservatively safety-keep a notification. Discussion team mentions found in historical comments continue to protect the Discussion until it is manually resolved.
 
 Only `Issue`, `PullRequest`, `Discussion`, `Commit`, `Release`, and `CheckSuite` are eligible for the catch-all hush action. Unsupported, unknown, sensitive, administrative, and security-related subject types are safety-kept.
