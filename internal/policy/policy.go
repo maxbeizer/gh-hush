@@ -18,6 +18,7 @@ const (
 	rulePersonalAssign       = "keep.personal_assignment"
 	ruleIndividualReview     = "keep.individual_review_request"
 	ruleActiveTeamReview     = "keep.active_team_review_request"
+	ruleWatchedRepository    = "keep.watched_repository"
 	ruleUserAuthored         = "keep.user_authored_work"
 	ruleDiscussionTeam       = "keep.discussion_team_mention"
 	ruleSafetyFailure        = "safety.keep_on_enrichment_failure"
@@ -87,9 +88,10 @@ func (e *Evaluator) evaluate(ctx context.Context, thread model.Notification, res
 }
 
 type evidenceRequirements struct {
-	subject            bool
-	pullRequestState   bool
-	discussionComments bool
+	subject             bool
+	pullRequestState    bool
+	watchedSubjectState bool
+	discussionComments  bool
 }
 
 type evaluationEvidence struct {
@@ -109,7 +111,9 @@ func (e *Evaluator) evidenceRequirements(thread model.Notification) evidenceRequ
 		return evidenceRequirements{}
 	}
 	repositoryOrg := strings.SplitN(thread.Repository.FullName, "/", 2)[0]
+	watched, isWatched := e.cfg.WatchedRepository(thread.Repository.FullName)
 	if (config.Enabled(e.cfg.Keep.ExternalOrganizationIssues) && !strings.EqualFold(repositoryOrg, e.cfg.GitHubOrganization)) ||
+		(isWatched && config.Enabled(watched.AllNotifications)) ||
 		(config.Enabled(e.cfg.Keep.PersonallyMentioned) && thread.Reason == "mention") ||
 		(config.Enabled(e.cfg.Keep.PersonallyAssigned) && thread.Reason == "assign") ||
 		(config.Enabled(e.cfg.Keep.AuthoredByUser) && thread.Reason == "author") {
@@ -135,7 +139,25 @@ func (e *Evaluator) evidenceRequirements(thread model.Notification) evidenceRequ
 		requirements.subject = true
 		requirements.discussionComments = true
 	}
+	if isWatched && config.Enabled(watchedSubjectCapability(watched, t)) {
+		requirements.subject = true
+		requirements.watchedSubjectState = true
+	}
 	return requirements
+}
+
+// watchedSubjectCapability returns the watched-repository capability governing
+// a subject type, or nil when the type has no open/closed capability.
+func watchedSubjectCapability(watched config.WatchedRepository, subjectType string) *bool {
+	switch subjectType {
+	case "PullRequest":
+		return watched.OpenPullRequests
+	case "Issue":
+		return watched.OpenIssues
+	case "Discussion":
+		return watched.OpenDiscussions
+	}
+	return nil
 }
 
 func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequirements, evidence evaluationEvidence) model.Decision {
@@ -170,6 +192,14 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 			decision.Rules = append(decision.Rules, model.Rule{ID: ruleDiscussionTeam, Evidence: fmt.Sprintf("discussion body or complete comment history contains exact team mention @%s", team)})
 		}
 	}
+	if watched, ok := e.cfg.WatchedRepository(thread.Repository.FullName); ok {
+		switch {
+		case config.Enabled(watched.AllNotifications):
+			decision.Rules = append(decision.Rules, model.Rule{ID: ruleWatchedRepository, Evidence: fmt.Sprintf("watched repository %q keeps all notifications", thread.Repository.FullName)})
+		case config.Enabled(watchedSubjectCapability(watched, thread.Subject.Type)) && watchedSubjectIsOpen(thread.Subject.Type, evidence.subject):
+			decision.Rules = append(decision.Rules, model.Rule{ID: ruleWatchedRepository, Evidence: fmt.Sprintf("watched repository %q keeps open %s subjects", thread.Repository.FullName, thread.Subject.Type)})
+		}
+	}
 	if !isHushableSubjectType(thread.Subject.Type) {
 		decision.Rules = append(decision.Rules, model.Rule{ID: ruleSafetyUnsupported, Evidence: fmt.Sprintf("subject type %q is not in the explicit hush allowlist", thread.Subject.Type)})
 	}
@@ -180,6 +210,9 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 	}
 	if requirements.pullRequestState && evidence.subjectErr == nil && evidence.subject.State != "open" && evidence.subject.State != "closed" {
 		evidenceErrors = append(evidenceErrors, fmt.Errorf("pull request state %q is unavailable or unsupported", evidence.subject.State))
+	}
+	if requirements.watchedSubjectState && !requirements.pullRequestState && evidence.subjectErr == nil && !watchedSubjectStateIsKnown(thread.Subject.Type, evidence.subject) {
+		evidenceErrors = append(evidenceErrors, fmt.Errorf("watched repository subject state %q is unavailable or unsupported", evidence.subject.State))
 	}
 	if requirements.discussionComments && evidence.discussionCommentsErr != nil {
 		evidenceErrors = append(evidenceErrors, evidence.discussionCommentsErr)
@@ -195,6 +228,23 @@ func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequi
 	decision.Action = model.ActionUnsubscribeAndMarkDone
 	decision.Rules = []model.Rule{{ID: ruleAllOther, Evidence: "no enabled keep or safety rule matched after successful evaluation"}}
 	return decision
+}
+
+func watchedSubjectIsOpen(subjectType string, subject model.Resource) bool {
+	if subject.State == "open" {
+		return true
+	}
+	// GitHub's REST API reports "locked" instead of open/closed for a locked
+	// Discussion. state_reason remains nil when it is open and is populated when
+	// it was closed, which preserves the configured "not closed" semantics.
+	return subjectType == "Discussion" && subject.State == "locked" && subject.StateReason == nil
+}
+
+func watchedSubjectStateIsKnown(subjectType string, subject model.Resource) bool {
+	if subject.State == "open" || subject.State == "closed" {
+		return true
+	}
+	return subjectType == "Discussion" && subject.State == "locked"
 }
 
 func resourceAuthor(resource model.Resource) string {

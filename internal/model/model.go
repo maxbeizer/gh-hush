@@ -28,14 +28,15 @@ type Subject struct {
 // needed to classify notifications. GitHub calls an Issue/PR/Discussion owner
 // "user" and a Commit/Release owner "author".
 type Resource struct {
-	HTMLURL            string `json:"html_url"`
-	Body               string `json:"body"`
-	State              string `json:"state"`
-	User               User   `json:"user"`
-	Author             User   `json:"author"`
-	Assignees          []User `json:"assignees"`
-	RequestedReviewers []User `json:"requested_reviewers"`
-	RequestedTeams     []Team `json:"requested_teams"`
+	HTMLURL            string  `json:"html_url"`
+	Body               string  `json:"body"`
+	State              string  `json:"state"`
+	StateReason        *string `json:"state_reason"`
+	User               User    `json:"user"`
+	Author             User    `json:"author"`
+	Assignees          []User  `json:"assignees"`
+	RequestedReviewers []User  `json:"requested_reviewers"`
+	RequestedTeams     []Team  `json:"requested_teams"`
 }
 
 type User struct {

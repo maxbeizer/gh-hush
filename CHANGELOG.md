@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 ### Added
 
 - Add `gh hush init-config` to create a valid conservative starter policy from explicit user, organization, and optional team values without contacting GitHub or overwriting an existing file.
+- Add the optional `watched_repositories` configuration map, keyed by `owner/repo`, with the additive `all_notifications`, `open_pull_requests`, `open_issues`, and `open_discussions` capabilities. Existing configurations remain valid.
 
 ### Fixed
 

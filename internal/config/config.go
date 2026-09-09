@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -16,6 +17,7 @@ import (
 var (
 	loginPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
 	teamSlugPattern     = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	repositoryPattern   = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
 	unknownFieldPattern = regexp.MustCompile(`^line ([0-9]+): field ([^ ]+) not found in type .+$`)
 )
 
@@ -37,13 +39,34 @@ func DefaultPath() (string, error) {
 
 // Config is the complete notification policy. Unknown YAML fields are rejected.
 type Config struct {
-	User               string   `yaml:"user"`
-	GitHubOrganization string   `yaml:"github_organization"`
-	TeamSlugs          []string `yaml:"team_slugs"`
-	Keep               Keep     `yaml:"keep"`
-	Hush               struct {
+	User                string                       `yaml:"user"`
+	GitHubOrganization  string                       `yaml:"github_organization"`
+	TeamSlugs           []string                     `yaml:"team_slugs"`
+	Keep                Keep                         `yaml:"keep"`
+	WatchedRepositories map[string]WatchedRepository `yaml:"watched_repositories"`
+	Hush                struct {
 		AllOtherNotifications *bool `yaml:"all_other_notifications"`
 	} `yaml:"hush"`
+}
+
+// WatchedRepository protects notifications in one repository in addition to,
+// and never instead of, the keep rules. Omitted capabilities are disabled.
+type WatchedRepository struct {
+	AllNotifications *bool `yaml:"all_notifications"`
+	OpenPullRequests *bool `yaml:"open_pull_requests"`
+	OpenIssues       *bool `yaml:"open_issues"`
+	OpenDiscussions  *bool `yaml:"open_discussions"`
+}
+
+// WatchedRepository returns the configured rule for an owner/repo full name.
+// GitHub treats repository names case-insensitively, so lookup does too.
+func (c Config) WatchedRepository(fullName string) (WatchedRepository, bool) {
+	for name, watched := range c.WatchedRepositories {
+		if strings.EqualFold(name, fullName) {
+			return watched, true
+		}
+	}
+	return WatchedRepository{}, false
 }
 
 type Keep struct {
@@ -178,7 +201,39 @@ func (c Config) Validate() error {
 		}
 		seenTeams[key] = struct{}{}
 	}
+
+	validationErrors = append(validationErrors, c.validateWatchedRepositories()...)
 	return errors.Join(validationErrors...)
+}
+
+func (c Config) validateWatchedRepositories() []error {
+	var validationErrors []error
+	names := make([]string, 0, len(c.WatchedRepositories))
+	for name := range c.WatchedRepositories {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	seen := make(map[string]string, len(names))
+	for _, name := range names {
+		parts := strings.Split(name, "/")
+		if len(parts) != 2 || !validGitHubLogin(parts[0]) || !repositoryPattern.MatchString(parts[1]) {
+			validationErrors = append(validationErrors, fmt.Errorf("watched_repositories key %q must use owner/repo form", name))
+			continue
+		}
+		key := strings.ToLower(name)
+		if previous, exists := seen[key]; exists {
+			validationErrors = append(validationErrors, fmt.Errorf("watched_repositories contains duplicate %q and %q", previous, name))
+		}
+		seen[key] = name
+
+		watched := c.WatchedRepositories[name]
+		if !Enabled(watched.AllNotifications) && !Enabled(watched.OpenPullRequests) &&
+			!Enabled(watched.OpenIssues) && !Enabled(watched.OpenDiscussions) {
+			validationErrors = append(validationErrors, fmt.Errorf("watched_repositories entry %q must enable at least one capability", name))
+		}
+	}
+	return validationErrors
 }
 
 func configFixPrompt(path string, err error) string {
