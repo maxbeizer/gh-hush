@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -59,9 +60,20 @@ type schemaObject struct {
 	Type                 string                  `json:"type"`
 	Description          string                  `json:"description"`
 	Properties           map[string]schemaObject `json:"properties"`
+	PatternProperties    map[string]schemaObject `json:"patternProperties"`
 	Required             []string                `json:"required"`
 	AdditionalProperties *bool                   `json:"additionalProperties"`
 	Items                *schemaObject           `json:"items"`
+}
+
+// optionalSchemaFields are documented fields that intentionally stay absent
+// from a schema "required" list, keeping older configurations valid.
+var optionalSchemaFields = map[string]bool{
+	"config.watched_repositories":                      true,
+	"config.watched_repositories[].all_notifications":  true,
+	"config.watched_repositories[].open_pull_requests": true,
+	"config.watched_repositories[].open_issues":        true,
+	"config.watched_repositories[].open_discussions":   true,
 }
 
 func assertSchemaMatchesType(t *testing.T, path string, schema schemaObject, typ reflect.Type) {
@@ -71,10 +83,14 @@ func assertSchemaMatchesType(t *testing.T, path string, schema schemaObject, typ
 		t.Errorf("%s must reject additional properties", path)
 	}
 	var fields []string
+	var requiredFields []string
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
 		name := strings.Split(field.Tag.Get("yaml"), ",")[0]
 		fields = append(fields, name)
+		if !optionalSchemaFields[path+"."+name] {
+			requiredFields = append(requiredFields, name)
+		}
 		property, ok := schema.Properties[name]
 		if !ok {
 			t.Errorf("%s.%s is missing from config.schema.json", path, name)
@@ -88,8 +104,12 @@ func assertSchemaMatchesType(t *testing.T, path string, schema schemaObject, typ
 		if fieldType.Kind() == reflect.Struct {
 			assertSchemaMatchesType(t, path+"."+name, property, fieldType)
 		}
+		if fieldType.Kind() == reflect.Map {
+			assertSchemaMatchesMap(t, path+"."+name, property, fieldType)
+		}
 	}
 	sort.Strings(fields)
+	sort.Strings(requiredFields)
 	schemaFields := make([]string, 0, len(schema.Properties))
 	for name := range schema.Properties {
 		schemaFields = append(schemaFields, name)
@@ -99,8 +119,26 @@ func assertSchemaMatchesType(t *testing.T, path string, schema schemaObject, typ
 	if !reflect.DeepEqual(schemaFields, fields) {
 		t.Errorf("%s schema fields = %v, Go fields = %v", path, schemaFields, fields)
 	}
-	if !reflect.DeepEqual(schema.Required, fields) {
-		t.Errorf("%s required fields = %v, want %v", path, schema.Required, fields)
+	if !reflect.DeepEqual(schema.Required, requiredFields) {
+		t.Errorf("%s required fields = %v, want %v", path, schema.Required, requiredFields)
+	}
+}
+
+// assertSchemaMatchesMap checks a map-valued field, whose entry schema lives
+// under exactly one patternProperties key constraining the map key syntax.
+func assertSchemaMatchesMap(t *testing.T, path string, schema schemaObject, typ reflect.Type) {
+	t.Helper()
+	if typ.Key().Kind() != reflect.String {
+		t.Fatalf("%s must use string map keys", path)
+	}
+	if len(schema.PatternProperties) != 1 {
+		t.Fatalf("%s must define exactly one patternProperties entry", path)
+	}
+	for pattern, entry := range schema.PatternProperties {
+		if _, err := regexp.Compile(pattern); err != nil {
+			t.Errorf("%s key pattern %q is invalid: %v", path, pattern, err)
+		}
+		assertSchemaMatchesType(t, path+"[]", entry, typ.Elem())
 	}
 }
 
@@ -117,6 +155,8 @@ func assertSchemaType(t *testing.T, path string, schema schemaObject, typ reflec
 		want = "boolean"
 	case reflect.Struct:
 		want = "object"
+	case reflect.Map:
+		want = "object"
 	case reflect.Slice:
 		want = "array"
 		if schema.Items == nil {
@@ -129,6 +169,28 @@ func assertSchemaType(t *testing.T, path string, schema schemaObject, typ reflec
 	}
 	if schema.Type != want {
 		t.Errorf("%s schema type = %q, want %q for Go type %s", path, schema.Type, want, typ)
+	}
+}
+
+func watchedYAML(repository, capabilities string) string {
+	return "watched_repositories:\n  " + repository + ":\n" + capabilities
+}
+
+func TestWatchedRepositoriesRejectCaseInsensitiveDuplicates(t *testing.T) {
+	input := validYAML + "watched_repositories:\n  github/watched:\n    open_issues: true\n  GitHub/Watched:\n    open_issues: true\n"
+	if _, err := Parse([]byte(input)); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("Parse() error = %v, want a duplicate watched repository error", err)
+	}
+}
+
+func TestWatchedRepositoryLookupIsCaseInsensitive(t *testing.T) {
+	on := true
+	cfg := Config{WatchedRepositories: map[string]WatchedRepository{"GitHub/Watched": {AllNotifications: &on}}}
+	if watched, ok := cfg.WatchedRepository("github/watched"); !ok || !Enabled(watched.AllNotifications) {
+		t.Fatalf("WatchedRepository() = %#v, %v", watched, ok)
+	}
+	if _, ok := cfg.WatchedRepository("github/other"); ok {
+		t.Fatal("WatchedRepository() matched an unwatched repository")
 	}
 }
 
@@ -151,6 +213,11 @@ func TestPublishedSchemaEnforcesRuntimeConstraints(t *testing.T) {
 		{"wrong boolean type", strings.Replace(validYAML, "personally_mentioned: true", "personally_mentioned: enabled", 1), false},
 		{"malformed team", strings.Replace(validYAML, "github/notifications", "github", 1), false},
 		{"duplicate team", strings.Replace(validYAML, "  - github/notifications\n", "  - github/notifications\n  - github/notifications\n", 1), false},
+		{"watched repositories", validYAML + watchedYAML("github/watched", "    open_pull_requests: true\n"), true},
+		{"watched repository outside organization", validYAML + watchedYAML("other-owner/watched", "    all_notifications: true\n"), true},
+		{"watched repository without owner", validYAML + watchedYAML("watched", "    open_issues: true\n"), false},
+		{"watched repository without capabilities", validYAML + watchedYAML("github/watched", "    open_issues: false\n"), false},
+		{"watched repository unknown capability", validYAML + watchedYAML("github/watched", "    open_releases: true\n"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

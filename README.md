@@ -110,6 +110,13 @@ keep:
   authored_by_user: true
   team_mentioned_discussions: true
 
+watched_repositories:
+  YOUR-ORGANIZATION/YOUR-WATCHED-REPOSITORY:
+    open_pull_requests: true
+    open_issues: true
+  ANY-OWNER/ANOTHER-REPOSITORY:
+    all_notifications: true
+
 hush:
   all_other_notifications: true
 ```
@@ -125,6 +132,20 @@ Keep rules protect:
 5. an open pull request with a current review request for a configured team;
 6. work authored by `user`; and
 7. Discussions containing an exact configured team mention in the body or anywhere in the complete paginated comment history.
+
+### Watched repositories
+
+`watched_repositories` is optional and adds protection for repositories you want to follow even when nothing is directed at you. Each key is an `owner/repo` name matched case-insensitively, and may belong to any owner. Capabilities are opt-in: an omitted capability is disabled, and every entry must enable at least one.
+
+| Capability | Protects |
+| --- | --- |
+| `all_notifications` | Every notification in the repository, regardless of subject type or state. No subject request is required. |
+| `open_pull_requests` | Notifications whose subject is an open pull request, including drafts. Merged and closed pull requests are not protected. |
+| `open_issues` | Notifications whose subject is an open Issue. |
+| `open_discussions` | Notifications whose subject is a Discussion that is not closed. Answered and locked Discussions are still protected. |
+
+Watched repositories are strictly additive: a match keeps the notification, and a non-match falls through to the keep rules above unchanged. When a capability needs the subject's state and that state is unavailable or unrecognized, the notification is conservatively safety-kept.
+
 
 Closed and merged pull requests do not match the team-review keep rule and proceed through normal policy evaluation. Required evidence failures, including an unavailable or unrecognized pull-request state, conservatively safety-keep a notification. Discussion team mentions found in historical comments continue to protect the Discussion until it is manually resolved.
 

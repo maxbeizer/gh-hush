@@ -54,6 +54,30 @@
         "team_mentioned_discussions": {"type": "boolean", "description": "Keep Discussions whose body or comment history mentions a configured team."}
       }
     },
+    "watched_repositories": {
+      "type": "object",
+      "description": "Repositories whose notifications receive additional protection, keyed by owner/repo. Omitted capabilities are disabled and each entry must enable at least one.",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9_.-]{1,100}$": {
+          "type": "object",
+          "description": "Capabilities protecting notifications in one watched repository.",
+          "additionalProperties": false,
+          "anyOf": [
+            {"required": ["all_notifications"], "properties": {"all_notifications": {"const": true}}},
+            {"required": ["open_pull_requests"], "properties": {"open_pull_requests": {"const": true}}},
+            {"required": ["open_issues"], "properties": {"open_issues": {"const": true}}},
+            {"required": ["open_discussions"], "properties": {"open_discussions": {"const": true}}}
+          ],
+          "properties": {
+            "all_notifications": {"type": "boolean", "description": "Keep every notification in this repository regardless of subject type or state."},
+            "open_pull_requests": {"type": "boolean", "description": "Keep notifications whose subject is an open pull request, including drafts."},
+            "open_issues": {"type": "boolean", "description": "Keep notifications whose subject is an open Issue."},
+            "open_discussions": {"type": "boolean", "description": "Keep notifications whose subject is a Discussion that is not closed."}
+          }
+        }
+      }
+    },
     "hush": {
       "type": "object",
       "description": "Catch-all action applied after keep rules.",

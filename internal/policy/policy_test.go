@@ -284,6 +284,70 @@ func TestEvaluatorPassesContextToEvidenceSource(t *testing.T) {
 	}
 }
 
+func TestWatchedRepositoryKeepsConfiguredSubjects(t *testing.T) {
+	on := true
+	watchedConfig := func(watched config.WatchedRepository) config.Config {
+		cfg := withEvidenceRulesDisabled(testConfig())
+		cfg.WatchedRepositories = map[string]config.WatchedRepository{"GitHub/Watched": watched}
+		return cfg
+	}
+	tests := []struct {
+		name    string
+		watched config.WatchedRepository
+		item    model.Notification
+		subject model.Resource
+		keep    bool
+	}{
+		{"all notifications", config.WatchedRepository{AllNotifications: &on}, thread("1", "github/watched", "Release", "subscribed"), model.Resource{}, true},
+		{"open pull request", config.WatchedRepository{OpenPullRequests: &on}, thread("1", "github/watched", "PullRequest", "subscribed"), model.Resource{State: "open"}, true},
+		{"merged pull request", config.WatchedRepository{OpenPullRequests: &on}, thread("1", "github/watched", "PullRequest", "subscribed"), model.Resource{State: "closed"}, false},
+		{"open issue", config.WatchedRepository{OpenIssues: &on}, thread("1", "github/watched", "Issue", "subscribed"), model.Resource{State: "open"}, true},
+		{"open discussion", config.WatchedRepository{OpenDiscussions: &on}, thread("1", "github/watched", "Discussion", "subscribed"), model.Resource{State: "open"}, true},
+		{"disabled subject type", config.WatchedRepository{OpenIssues: &on}, thread("1", "github/watched", "PullRequest", "subscribed"), model.Resource{State: "open"}, false},
+		{"unwatched repository", config.WatchedRepository{AllNotifications: &on}, thread("1", "github/other", "Issue", "subscribed"), model.Resource{State: "open"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := NewEvaluator(watchedConfig(tt.watched), &testEvidenceSource{subject: tt.subject}).Evaluate(context.Background(), tt.item)
+			if hasRule(d, ruleWatchedRepository) != tt.keep {
+				t.Fatalf("decision = %#v, want watched keep = %v", d, tt.keep)
+			}
+		})
+	}
+}
+
+func TestWatchedRepositoryAllNotificationsNeedsNoEvidence(t *testing.T) {
+	on := true
+	cfg := withEvidenceRulesDisabled(testConfig())
+	cfg.WatchedRepositories = map[string]config.WatchedRepository{"github/watched": {AllNotifications: &on}}
+	source := &testEvidenceSource{}
+	d := NewEvaluator(cfg, source).Evaluate(context.Background(), thread("1", "github/watched", "PullRequest", "subscribed"))
+	if d.Action != model.ActionKeep || !hasRule(d, ruleWatchedRepository) || len(source.calls) != 0 {
+		t.Fatalf("decision = %#v, evidence calls = %v", d, source.calls)
+	}
+}
+
+func TestWatchedRepositoryUnavailableStateSafetyKeeps(t *testing.T) {
+	on := true
+	cfg := withEvidenceRulesDisabled(testConfig())
+	cfg.WatchedRepositories = map[string]config.WatchedRepository{"github/watched": {OpenDiscussions: &on}}
+	d := NewEvaluator(cfg, &testEvidenceSource{subject: model.Resource{State: ""}}).Evaluate(context.Background(), thread("1", "github/watched", "Discussion", "subscribed"))
+	if d.Action != model.ActionKeep || !hasRule(d, ruleSafetyFailure) {
+		t.Fatalf("decision = %#v", d)
+	}
+}
+
+// Watched repositories add protection; they never remove an existing keep.
+func TestWatchedRepositoryDoesNotOverrideExistingKeepRules(t *testing.T) {
+	on := true
+	cfg := testConfig()
+	cfg.WatchedRepositories = map[string]config.WatchedRepository{"github/watched": {OpenPullRequests: &on}}
+	d := NewEvaluator(cfg, &testEvidenceSource{subject: model.Resource{State: "closed"}}).Evaluate(context.Background(), thread("1", "github/watched", "PullRequest", "mention"))
+	if d.Action != model.ActionKeep || !hasRule(d, rulePersonalMention) || hasRule(d, ruleWatchedRepository) {
+		t.Fatalf("decision = %#v", d)
+	}
+}
+
 type testEvidenceSource struct {
 	subject      model.Resource
 	comments     []model.Resource
