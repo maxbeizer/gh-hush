@@ -34,15 +34,21 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Command {
 	var configPath string
 	var dryRun, confirm, debug bool
-	resolveConfig := func(cmd *cobra.Command) (config.Config, string, bool, error) {
+	resolveConfigPath := func(cmd *cobra.Command) (string, bool, error) {
 		provided := cmd.Flags().Changed("config")
-		path := configPath
-		if !provided {
-			var err error
-			path, err = config.DefaultPath()
-			if err != nil {
-				return config.Config{}, "", false, fmt.Errorf("resolve default config path: %w", err)
-			}
+		if provided {
+			return configPath, true, nil
+		}
+		path, err := config.DefaultPath()
+		if err != nil {
+			return "", false, fmt.Errorf("resolve default config path: %w", err)
+		}
+		return path, false, nil
+	}
+	resolveConfig := func(cmd *cobra.Command) (config.Config, string, bool, error) {
+		path, provided, err := resolveConfigPath(cmd)
+		if err != nil {
+			return config.Config{}, "", false, err
 		}
 		cfg, _, err := config.Load(path)
 		return cfg, path, provided, err
@@ -51,10 +57,10 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 		Use: "gh-hush", Short: "Explainable, policy-driven GitHub notification triage",
 		Version: Version, SilenceUsage: true, SilenceErrors: true, Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			cfg, _, provided, err := resolveConfig(cmd)
+			cfg, path, provided, err := resolveConfig(cmd)
 			if err != nil {
 				if !provided && errors.Is(err, os.ErrNotExist) {
-					return cmd.Help()
+					return fmt.Errorf("default config not found at %q; create a conservative starter config with: gh hush init-config --user YOUR-GITHUB-LOGIN --github-organization YOUR-ORGANIZATION", path)
 				}
 				return err
 			}
@@ -68,6 +74,31 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 	rootCmd.Flags().BoolVar(&confirm, "confirm", false, "unsubscribe from and mark proposed notifications Done without prompting")
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "write request and workflow diagnostics to stderr")
 	rootCmd.MarkFlagsMutuallyExclusive("dry-run", "confirm")
+	var initUser, initOrganization string
+	var initTeams []string
+	initCmd := &cobra.Command{
+		Use:   "init-config",
+		Short: "Create a conservative starter configuration without overwriting files",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if initUser == "" || initOrganization == "" {
+				return errors.New("--user and --github-organization are required; gh-hush will not guess identity or team policy")
+			}
+			path, _, err := resolveConfigPath(cmd)
+			if err != nil {
+				return err
+			}
+			if err := config.Initialize(path, initUser, initOrganization, initTeams); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(stdout, "Created conservative starter configuration: %s\nReview it, then run: gh hush validate-config --config %q\n", path, path)
+			return err
+		},
+	}
+	initCmd.Flags().StringVar(&initUser, "user", "", "GitHub login that must match the authenticated gh account")
+	initCmd.Flags().StringVar(&initOrganization, "github-organization", "", "primary GitHub organization login")
+	initCmd.Flags().StringSliceVar(&initTeams, "team", nil, "team to protect in org/team-slug form (repeatable)")
+	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "validate-config",
 		Short: "Validate the configuration without contacting GitHub",

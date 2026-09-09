@@ -75,6 +75,16 @@ Marking Done removes the current notification from the inbox; it is not the same
 
 The default path is `$XDG_CONFIG_HOME/gh-hush/config.yml`, or `~/.config/gh-hush/config.yml` when `XDG_CONFIG_HOME` is unset. Override it with `--config PATH`.
 
+On the first run, create a valid conservative starter configuration with your explicit identity values:
+
+```bash
+gh hush init-config --user YOUR-GITHUB-LOGIN --github-organization YOUR-PRIMARY-ORGANIZATION
+gh hush init-config --user YOUR-GITHUB-LOGIN --github-organization YOUR-PRIMARY-ORGANIZATION \
+  --team YOUR-PRIMARY-ORGANIZATION/YOUR-TEAM
+```
+
+`--team` is optional and repeatable. Initialization enables every documented keep rule, including the external-organization protection, and the catch-all hush action. It does not contact GitHub or infer your user, organization, or teams. It creates parent directories and a user-readable-only file, refuses to overwrite any existing path, prints the created path, and tells you to review and validate the policy. Use `--config PATH` with `init-config` to create a non-default file. A normal run with no default config exits with the exact path and initialization command instead of showing generic help.
+
 Every normal run validates the complete configuration before contacting GitHub and exits with a descriptive error if it is invalid. To check it independently, run:
 
 ```bash

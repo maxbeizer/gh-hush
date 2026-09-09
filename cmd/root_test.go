@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -50,16 +51,61 @@ func TestVersionFlag(t *testing.T) {
 	}
 }
 
-func TestDefaultOperationShowsHelpWhenConfigMissing(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+func TestDefaultOperationExplainsHowToInitializeMissingConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"--dry-run"})
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(home, "gh-hush", "config.yml")) ||
+		!strings.Contains(err.Error(), "gh hush init-config --user") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestInitConfigCreatesValidConservativePolicy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
 	var out strings.Builder
 	command := NewRootCommand(&out, io.Discard)
-	command.SetArgs(nil)
+	command.SetArgs([]string{"init-config", "--user", "octocat", "--github-organization", "github", "--team", "github/notifications"})
 	if err := command.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "Usage:") {
+	path := filepath.Join(home, "gh-hush", "config.yml")
+	cfg, _, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("generated configuration is invalid: %v", err)
+	}
+	if cfg.User != "octocat" || cfg.GitHubOrganization != "github" || len(cfg.TeamSlugs) != 1 ||
+		!config.Enabled(cfg.Keep.ExternalOrganizationIssues) || !config.Enabled(cfg.Keep.TeamMentionedDiscussions) ||
+		!config.Enabled(cfg.Hush.AllOtherNotifications) {
+		t.Fatalf("generated configuration=%#v", cfg)
+	}
+	if !strings.Contains(out.String(), "Created conservative starter configuration: "+path) {
 		t.Fatalf("output=%q", out.String())
+	}
+}
+
+func TestInitConfigRequiresIdentityAndNeverOverwrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"init-config", "--config", path})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "will not guess identity") {
+		t.Fatalf("missing identity error=%v", err)
+	}
+	original := []byte("leave me alone\n")
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	command = NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"init-config", "--config", path, "--user", "octocat", "--github-organization", "github"})
+	if err := command.Execute(); err == nil || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("overwrite error=%v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(original) {
+		t.Fatalf("file=%q err=%v", got, err)
 	}
 }
 func TestNoArgsRunsDefaultOperation(t *testing.T) {

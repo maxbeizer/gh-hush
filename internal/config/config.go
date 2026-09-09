@@ -56,6 +56,50 @@ type Keep struct {
 	TeamMentionedDiscussions              *bool `yaml:"team_mentioned_discussions"`
 }
 
+// Initialize writes a conservative starter policy to a new path. It never
+// replaces an existing file; callers must explicitly supply identity values.
+func Initialize(path, user, organization string, teamSlugs []string) error {
+	on := true
+	cfg := Config{
+		User:               user,
+		GitHubOrganization: organization,
+		TeamSlugs:          teamSlugs,
+		Keep: Keep{
+			ExternalOrganizationIssues:            &on,
+			PersonallyMentioned:                   &on,
+			PersonallyAssigned:                    &on,
+			IndividuallyReviewRequested:           &on,
+			ActiveTeamReviewRequestedPullRequests: &on,
+			AuthoredByUser:                        &on,
+			TeamMentionedDiscussions:              &on,
+		},
+	}
+	cfg.Hush.AllOtherNotifications = &on
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("create config: %w", err)
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("encode config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return fmt.Errorf("create config %q: %w", path, err)
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return fmt.Errorf("write config %q: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close config %q: %w", path, err)
+	}
+	return nil
+}
+
 func Load(path string) (Config, []byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
