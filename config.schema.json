@@ -58,6 +58,12 @@
       "type": "object",
       "description": "Repositories whose notifications receive additional protection, keyed by owner/repo. Omitted capabilities are disabled and each entry must enable at least one.",
       "additionalProperties": false,
+      "propertyNames": {
+        "allOf": [
+          {"pattern": "^[^/]{1,39}/"},
+          {"pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9_.-]{1,100}$"}
+        ]
+      },
       "patternProperties": {
         "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9_.-]{1,100}$": {
           "type": "object",

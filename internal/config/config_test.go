@@ -216,6 +216,7 @@ func TestPublishedSchemaEnforcesRuntimeConstraints(t *testing.T) {
 		{"watched repositories", validYAML + watchedYAML("github/watched", "    open_pull_requests: true\n"), true},
 		{"watched repository outside organization", validYAML + watchedYAML("other-owner/watched", "    all_notifications: true\n"), true},
 		{"watched repository without owner", validYAML + watchedYAML("watched", "    open_issues: true\n"), false},
+		{"watched repository owner too long", validYAML + watchedYAML(strings.Repeat("a", 40)+"/watched", "    open_issues: true\n"), false},
 		{"watched repository without capabilities", validYAML + watchedYAML("github/watched", "    open_issues: false\n"), false},
 		{"watched repository unknown capability", validYAML + watchedYAML("github/watched", "    open_releases: true\n"), false},
 	}
