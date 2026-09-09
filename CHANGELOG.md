@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+### Added
+
+- Add `gh hush init-config` to create a valid conservative starter policy from explicit user, organization, and optional team values without contacting GitHub or overwriting an existing file.
+
+### Fixed
+
+- Replace generic help on a missing default configuration with an actionable error that includes the expected path and exact initialization command, including when run flags are present.
+
 ## [0.2.2] - 2026-09-05
 
 ### Added
