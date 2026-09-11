@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -169,8 +170,12 @@ func Migrate(data []byte) ([]byte, error) {
 	}
 	var legacy legacyConfig
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
 	if err := decoder.Decode(&legacy); err != nil {
 		return nil, fmt.Errorf("read existing configuration: %w", err)
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return nil, errors.New("configuration must contain exactly one YAML document")
 	}
 	if legacy.Version != nil && *legacy.Version >= Version {
 		return nil, errors.New("configuration is already version 3")

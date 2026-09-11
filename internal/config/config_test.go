@@ -132,6 +132,12 @@ func TestPublishedSchemaEnforcesRuntimeConstraints(t *testing.T) {
 		{"bad default action", strings.Replace(validYAML, "action: hush", "action: silence", 1), false},
 		{"bad rule action", strings.Replace(validYAML, "    action: keep", "    action: silence", 1), false},
 		{"unknown predicate key", strings.Replace(validYAML, "      reason: [mention]", "      nonsense: true", 1), false},
+		{"empty predicate", strings.Replace(validYAML, "      reason: [mention]", "      {}", 1), false},
+		{"empty string predicate", strings.Replace(validYAML, "      reason: [mention]", "      author: \"\"", 1), false},
+		{"non-string predicate value", strings.Replace(validYAML, "      reason: [mention]", "      author: true", 1), false},
+		{"invalid state value", strings.Replace(validYAML, "      reason: [mention]", "      state: draft", 1), false},
+		{"search without mention sibling", strings.Replace(validYAML, "      reason: [mention]", "      reason: [mention]\n      search: [comments]", 1), false},
+		{"recursive composition", strings.Replace(validYAML, "      reason: [mention]", "      any:\n        - all:\n            - not:\n                reason: [subscribed]\n            - subject_type: [Issue]", 1), true},
 		{"recommended template", string(RecommendedConfigYAML("octocat", "github", []string{"github/notifications"})), true},
 		{"recommended template without teams", string(RecommendedConfigYAML("octocat", "github", nil)), true},
 	}
@@ -228,6 +234,19 @@ hush:
 		if !containsString(names, want) {
 			t.Fatalf("migrated rules %v missing %q\n%s", names, want, migrated)
 		}
+	}
+}
+
+func TestMigrateRejectsUnknownAndMultiDocumentInput(t *testing.T) {
+	for _, tt := range []struct{ name, input, want string }{
+		{"unknown field", "user: octocat\ngithub_organization: github\nmystery: true\n", "read existing configuration"},
+		{"multiple documents", "user: octocat\ngithub_organization: github\n---\nuser: other\n", "exactly one"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := Migrate([]byte(tt.input)); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Migrate() error = %v, want %q", err, tt.want)
+			}
+		})
 	}
 }
 

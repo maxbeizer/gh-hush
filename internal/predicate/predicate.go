@@ -128,14 +128,23 @@ func (n Node) Empty() bool { return n.pred == nil }
 type allPredicate struct{ preds []Predicate }
 
 func (p allPredicate) Match(e *Evidence) (bool, error) {
+	var firstErr error
 	for _, child := range p.preds {
 		matched, err := child.Match(e)
 		if err != nil {
-			return false, err
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		if !matched {
+			// A conclusive non-match makes the conjunction false regardless of
+			// any indeterminate sibling, so the result is not evidence-limited.
 			return false, nil
 		}
+	}
+	if firstErr != nil {
+		return false, firstErr
 	}
 	return true, nil
 }
@@ -425,7 +434,7 @@ type mentionsPredicate struct {
 func (p mentionsPredicate) Match(e *Evidence) (bool, error) {
 	var targets []string
 	if p.team {
-		targets = e.resolveTeams(p.target)
+		targets = teamsForOwner(e.resolveTeams(p.target), e.Notification.Repository.FullName)
 	} else {
 		targets = []string{e.resolveLogin(p.target)}
 	}
@@ -540,6 +549,22 @@ func matchingRequestedTeams(configured []string, requested []model.Team, reposit
 		}
 	}
 	return matches
+}
+
+// teamsForOwner keeps only configured org/team-slug entries whose organization
+// matches the notification repository's owner, mirroring the owner scoping
+// applied to team review requests.
+func teamsForOwner(configured []string, repository string) []string {
+	owner := repositoryOwner(repository)
+	var scoped []string
+	for _, team := range configured {
+		parts := strings.SplitN(team, "/", 2)
+		if len(parts) != 2 || !strings.EqualFold(parts[0], owner) {
+			continue
+		}
+		scoped = append(scoped, team)
+	}
+	return scoped
 }
 
 func mentionsAny(target string, bodies ...string) bool {

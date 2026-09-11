@@ -30,6 +30,10 @@ func TestDecodeRejectsMalformedConditions(t *testing.T) {
 		{"negative day duration", "when:\n  age:\n    older_than: -3d", `invalid duration "-3d"`},
 		{"unknown search scope", "when:\n  mentions_team: my_teams\n  search: [title]", `search scope "title" must be body or comments`},
 		{"search is a mapping", "when:\n  mentions_user: me\n  search: {body: true}", "search"},
+		{"unsupported state value", "when:\n  state: draft", "must be open, closed, or locked"},
+		{"search without a mention sibling", "when:\n  reason: mention\n  search: [comments]", "exactly one sibling"},
+		{"non-string scalar", "when:\n  author: true", "must be a single value"},
+		{"oversized day duration", "when:\n  age:\n    older_than: 999999999d", "too large"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,7 +106,6 @@ func TestPredicateMatching(t *testing.T) {
 		{"reason miss", "reason: [mention, assign]", false},
 		{"state", "state: open", true},
 		{"state_not", "state_not: closed", true},
-		{"unsupported state value", "state: draft", false},
 		{"assignee me", "assignee: me", true},
 		{"assignee login", "assignee: hubot", false},
 		{"author login", "author: hubot", true},
@@ -293,6 +296,111 @@ func TestAgeComparesAgainstTheNotificationUpdateTime(t *testing.T) {
 }
 
 var testIdentity = Identity{User: "octocat", Organization: "github", Teams: []string{"github/notifications"}}
+
+func TestSubjectValueTracksTheLastFetchedSubject(t *testing.T) {
+	evidence := NewEvidence(notification("github/repo", "Issue", "subscribed"), testIdentity,
+		func() (model.Resource, error) { return model.Resource{HTMLURL: "https://example.test/1"}, nil }, nil)
+	if evidence.SubjectFetched() || evidence.SubjectValue().HTMLURL != "" {
+		t.Fatalf("subject value populated before any fetch: %#v", evidence.SubjectValue())
+	}
+	if _, err := evidence.Subject(); err != nil {
+		t.Fatal(err)
+	}
+	if !evidence.SubjectFetched() || evidence.SubjectValue().HTMLURL != "https://example.test/1" {
+		t.Fatalf("subject value did not track the fetched subject: %#v", evidence.SubjectValue())
+	}
+}
+
+func TestDecodeRejectsRecursiveAliasesWithoutCrashing(t *testing.T) {
+	for _, tt := range []struct{ name, document string }{
+		{"direct self alias", "when: &c {not: *c}"},
+		{"indirect alias cycle", "when: &c\n  all:\n    - not: *c"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := decode(tt.document)
+			if err == nil || !strings.Contains(err.Error(), "recursive YAML alias") {
+				t.Fatalf("decode error = %v, want recursive alias rejection", err)
+			}
+		})
+	}
+}
+
+func TestDecodeRejectsExcessiveNesting(t *testing.T) {
+	document := "when:\n"
+	indent := "  "
+	for i := 0; i < 200; i++ {
+		document += indent + "not:\n"
+		indent += "  "
+	}
+	document += indent + "reason: mention\n"
+	if _, err := decode(document); err == nil || !strings.Contains(err.Error(), "nested too deeply") {
+		t.Fatalf("decode error = %v, want depth-limit rejection", err)
+	}
+}
+
+func TestAllReportsErrorOnlyWhenNoChildConclusivelyFails(t *testing.T) {
+	// A conclusive non-match makes the conjunction false regardless of order,
+	// even when a sibling predicate cannot fetch its evidence.
+	for _, condition := range []string{
+		"all:\n  - state: open\n  - reason: mention",
+		"all:\n  - reason: mention\n  - state: open",
+	} {
+		node, err := decode("when:\n  " + strings.ReplaceAll(condition, "\n", "\n  "))
+		if err != nil {
+			t.Fatalf("decode error = %v", err)
+		}
+		evidence := NewEvidence(notification("github/repo", "Issue", "subscribed"), testIdentity,
+			func() (model.Resource, error) { return model.Resource{}, errors.New("state unavailable") }, nil)
+		matched, err := node.Match(evidence)
+		if matched || err != nil {
+			t.Fatalf("condition %q: matched=%v err=%v, want conclusive non-match", condition, matched, err)
+		}
+	}
+
+	// With no conclusive non-match, an indeterminate child surfaces the error.
+	node, err := decode("when:\n  all:\n    - reason: subscribed\n    - state: open")
+	if err != nil {
+		t.Fatalf("decode error = %v", err)
+	}
+	evidence := NewEvidence(notification("github/repo", "Issue", "subscribed"), testIdentity,
+		func() (model.Resource, error) { return model.Resource{}, errors.New("state unavailable") }, nil)
+	if _, err := node.Match(evidence); err == nil {
+		t.Fatal("expected indeterminate error when no child conclusively fails")
+	}
+}
+
+func TestMentionsTeamIsScopedToNotificationOwner(t *testing.T) {
+	node, err := decode("when:\n  mentions_team: my_teams\n  search: [body]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := model.Resource{Body: "cc @github/notifications"}
+	// Same team slug, but the notification lives in another organization.
+	matched, err := node.Match(newTestEvidence(notification("other/repo", "Discussion", "subscribed"), subject, nil))
+	if matched || err != nil {
+		t.Fatalf("cross-organization mention matched=%v err=%v", matched, err)
+	}
+	matched, err = node.Match(newTestEvidence(notification("github/repo", "Discussion", "subscribed"), subject, nil))
+	if !matched || err != nil {
+		t.Fatalf("same-organization mention matched=%v err=%v", matched, err)
+	}
+}
+
+func TestAgeThresholdsAreExclusiveAtTheBoundary(t *testing.T) {
+	original := now
+	now = func() time.Time { return time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC) }
+	t.Cleanup(func() { now = original })
+	node, err := decode("when:\n  age:\n    older_than: 30d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := notification("github/repo", "Issue", "subscribed")
+	item.UpdatedAt = time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	matched, err := node.Match(newTestEvidence(item, model.Resource{}, nil))
+	if matched || err != nil {
+		t.Fatalf("exactly 30d old matched=%v err=%v, want exclusive boundary", matched, err)
+	}
+}
 
 // decode parses a single-key document whose "when" value is the condition under
 // test, exercising the same path the configuration loader uses.

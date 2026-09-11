@@ -185,8 +185,8 @@ A condition is data, not an expression language. Sibling keys of a mapping form 
 | `reason` | GitHub's notification `reason`, for example `mention`, `assign`, `author`, `review_requested`. |
 | `author`, `assignee`, `review_requested` | A login or `me`. `assignee` and `review_requested` apply only to Issues and pull requests. |
 | `review_requested_team` | A team slug or `my_teams`. Team slugs match only within the notification's own owner. |
-| `mentions_user`, `mentions_team` | Exact `@`-mentions, with an optional `search` scope of `body` and/or `comments`; both are searched by default. Comment search covers the complete paginated history. |
-| `age` | `older_than: 30d`, `newer_than: 7d`, in Go durations plus a `d` day suffix. |
+| `mentions_user`, `mentions_team` | Exact `@`-mentions, with an optional `search` scope of `body` and/or `comments`; both are searched by default. `mentions_team` slugs match only within the notification's own owner. Comment search covers the complete paginated history. |
+| `age` | `older_than: 30d`, `newer_than: 7d`, in Go durations plus a `d` day suffix. Thresholds are exclusive: a notification exactly `30d` old does not match `older_than: 30d`. |
 
 Adding a new protection is now a rule you write rather than a new configuration field: `state: closed`, a repository glob, and an age threshold all parse today.
 

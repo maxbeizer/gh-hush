@@ -137,8 +137,14 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 			if err := os.WriteFile(path+".bak", data, 0600); err != nil {
 				return fmt.Errorf("back up config %q: %w", path, err)
 			}
+			if err := os.Chmod(path+".bak", 0600); err != nil {
+				return fmt.Errorf("secure backup config %q: %w", path, err)
+			}
 			if err := os.WriteFile(path, migrated, 0600); err != nil {
 				return fmt.Errorf("write migrated config %q: %w", path, err)
+			}
+			if err := os.Chmod(path, 0600); err != nil {
+				return fmt.Errorf("secure migrated config %q: %w", path, err)
 			}
 			_, err = fmt.Fprintf(stdout, "Migrated %s to version 3 (previous file saved as %s.bak).\nReview it, then run: gh hush validate-config --config %q\n", path, path, path)
 			return err

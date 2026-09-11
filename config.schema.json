@@ -82,23 +82,32 @@
     "predicate": {
       "type": "object",
       "additionalProperties": false,
+      "minProperties": 1,
       "description": "A composable condition. Sibling keys form an implicit all. any, all, and not compose child conditions; the remaining keys are leaf predicates.",
+      "dependentSchemas": {
+        "search": {
+          "anyOf": [
+            {"required": ["mentions_user"]},
+            {"required": ["mentions_team"]}
+          ]
+        }
+      },
       "properties": {
         "any": {"type": "array", "items": {"$ref": "#/$defs/predicate"}, "minItems": 1, "description": "Matches when any child condition matches."},
         "all": {"type": "array", "items": {"$ref": "#/$defs/predicate"}, "minItems": 1, "description": "Matches when every child condition matches."},
         "not": {"$ref": "#/$defs/predicate", "description": "Matches when the child condition does not match."},
         "repository": {"$ref": "#/$defs/repository", "description": "Matches on repository owner and name."},
         "subject_type": {"$ref": "#/$defs/stringOrList", "description": "Matches the notification subject type, e.g. PullRequest, Issue, Discussion."},
-        "state": {"type": "string", "description": "Matches subject state: open, closed, or locked."},
-        "state_not": {"type": "string", "description": "Matches when the subject state differs from the given state."},
+        "state": {"type": "string", "enum": ["open", "closed", "locked"], "description": "Matches subject state: open, closed, or locked."},
+        "state_not": {"type": "string", "enum": ["open", "closed", "locked"], "description": "Matches when the subject state differs from the given state."},
         "reason": {"$ref": "#/$defs/stringOrList", "description": "Matches GitHub's notification reason, e.g. mention, assign, author."},
-        "author": {"type": "string", "description": "Matches the subject author; me resolves to identity.user."},
-        "assignee": {"type": "string", "description": "Matches a current assignee; me resolves to identity.user."},
-        "review_requested": {"type": "string", "description": "Matches a current individual review request; me resolves to identity.user."},
-        "review_requested_team": {"type": "string", "description": "Matches a current team review request; my_teams resolves to identity.teams."},
-        "mentions_user": {"type": "string", "description": "Matches an @-mention of a user; me resolves to identity.user."},
-        "mentions_team": {"type": "string", "description": "Matches an @-mention of a team; my_teams resolves to identity.teams."},
-        "search": {"$ref": "#/$defs/stringOrList", "description": "Scope for mentions predicates: body and/or comments."},
+        "author": {"type": "string", "minLength": 1, "description": "Matches the subject author; me resolves to identity.user."},
+        "assignee": {"type": "string", "minLength": 1, "description": "Matches a current assignee; me resolves to identity.user."},
+        "review_requested": {"type": "string", "minLength": 1, "description": "Matches a current individual review request; me resolves to identity.user."},
+        "review_requested_team": {"type": "string", "minLength": 1, "description": "Matches a current team review request; my_teams resolves to identity.teams."},
+        "mentions_user": {"type": "string", "minLength": 1, "description": "Matches an @-mention of a user; me resolves to identity.user."},
+        "mentions_team": {"type": "string", "minLength": 1, "description": "Matches an @-mention of a team; my_teams resolves to identity.teams."},
+        "search": {"$ref": "#/$defs/searchScope", "description": "Scope for mentions predicates: body and/or comments."},
         "age": {"$ref": "#/$defs/age", "description": "Matches on the notification update age."}
       }
     },
@@ -110,8 +119,8 @@
           "additionalProperties": false,
           "minProperties": 1,
           "properties": {
-            "owner": {"type": "string", "description": "Repository owner must equal this login."},
-            "owner_not": {"type": "string", "description": "Repository owner must not equal this login."},
+            "owner": {"type": "string", "minLength": 1, "description": "Repository owner must equal this login."},
+            "owner_not": {"type": "string", "minLength": 1, "description": "Repository owner must not equal this login."},
             "any_of": {"$ref": "#/$defs/stringOrList", "description": "Repository full name or glob, e.g. github/dependency-*."}
           }
         }
@@ -122,14 +131,20 @@
       "additionalProperties": false,
       "minProperties": 1,
       "properties": {
-        "older_than": {"type": "string", "description": "e.g. 30d, 12h."},
-        "newer_than": {"type": "string", "description": "e.g. 7d, 24h."}
+        "older_than": {"type": "string", "minLength": 1, "description": "e.g. 30d, 12h."},
+        "newer_than": {"type": "string", "minLength": 1, "description": "e.g. 7d, 24h."}
       }
+    },
+    "searchScope": {
+      "oneOf": [
+        {"type": "string", "enum": ["body", "comments"]},
+        {"type": "array", "items": {"type": "string", "enum": ["body", "comments"]}, "minItems": 1}
+      ]
     },
     "stringOrList": {
       "oneOf": [
-        {"type": "string"},
-        {"type": "array", "items": {"type": "string"}, "minItems": 1}
+        {"type": "string", "minLength": 1},
+        {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
       ]
     }
   }

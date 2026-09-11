@@ -9,11 +9,26 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// maxConditionDepth bounds predicate-tree nesting so adversarial or accidental
+// deep documents cannot exhaust the stack during decoding.
+const maxConditionDepth = 64
+
+// maxDurationDays is the largest whole-day duration representable as a
+// time.Duration without overflowing its int64 nanosecond count.
+const maxDurationDays = 106751
+
+// decodeContext carries per-document decode state: the set of mapping nodes on
+// the active path (for alias-cycle detection) and the current nesting depth.
+type decodeContext struct {
+	active map[*yaml.Node]bool
+	depth  int
+}
+
 // UnmarshalYAML decodes a predicate node, preserving document order so that
 // cheap predicates can be authored before evidence-fetching ones and evaluated
 // first. The zero node (an omitted mapping) matches unconditionally.
 func (n *Node) UnmarshalYAML(value *yaml.Node) error {
-	pred, err := decodeNode(value)
+	pred, err := decodeNode(value, &decodeContext{active: map[*yaml.Node]bool{}})
 	if err != nil {
 		return err
 	}
@@ -28,17 +43,32 @@ func (n Node) MarshalYAML() (any, error) {
 	return nil, fmt.Errorf("predicate nodes are read-only and cannot be marshaled")
 }
 
-func decodeNode(value *yaml.Node) (Predicate, error) {
+func decodeNode(value *yaml.Node, ctx *decodeContext) (Predicate, error) {
 	if value == nil {
 		return nil, nil
 	}
 	if value.Kind == yaml.AliasNode {
-		return decodeNode(value.Alias)
+		if value.Alias == nil || ctx.active[value.Alias] {
+			return nil, fmt.Errorf("a rule condition contains a recursive YAML alias")
+		}
+		return decodeNode(value.Alias, ctx)
 	}
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("a rule condition must be a mapping, got %s", kindName(value.Kind))
 	}
-	preds, err := decodeMapping(value)
+	if ctx.active[value] {
+		return nil, fmt.Errorf("a rule condition contains a recursive YAML alias")
+	}
+	if ctx.depth >= maxConditionDepth {
+		return nil, fmt.Errorf("a rule condition is nested too deeply (limit %d)", maxConditionDepth)
+	}
+	ctx.active[value] = true
+	ctx.depth++
+	defer func() {
+		delete(ctx.active, value)
+		ctx.depth--
+	}()
+	preds, err := decodeMapping(value, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -51,19 +81,23 @@ func decodeNode(value *yaml.Node) (Predicate, error) {
 // decodeMapping decodes each key of a mapping into a predicate, preserving key
 // order. Sibling keys form an implicit "all". The "search" key is a modifier
 // consumed by the mentions predicates and is never a standalone predicate.
-func decodeMapping(value *yaml.Node) ([]Predicate, error) {
-	search, err := extractSearch(value)
+func decodeMapping(value *yaml.Node, ctx *decodeContext) ([]Predicate, error) {
+	search, hasSearch, err := extractSearch(value)
 	if err != nil {
 		return nil, err
 	}
 	var preds []Predicate
+	mentions := 0
 	for i := 0; i < len(value.Content); i += 2 {
 		key := value.Content[i].Value
 		child := value.Content[i+1]
 		if key == "search" {
 			continue
 		}
-		pred, err := decodeKey(key, child, search)
+		if key == "mentions_user" || key == "mentions_team" {
+			mentions++
+		}
+		pred, err := decodeKey(key, child, search, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -72,44 +106,47 @@ func decodeMapping(value *yaml.Node) ([]Predicate, error) {
 	if len(preds) == 0 {
 		return nil, fmt.Errorf("a rule condition must contain at least one predicate")
 	}
+	if hasSearch && mentions != 1 {
+		return nil, fmt.Errorf("search requires exactly one sibling mentions_user or mentions_team predicate")
+	}
 	return preds, nil
 }
 
-func extractSearch(value *yaml.Node) ([]string, error) {
+func extractSearch(value *yaml.Node) ([]string, bool, error) {
 	for i := 0; i < len(value.Content); i += 2 {
 		if value.Content[i].Value != "search" {
 			continue
 		}
 		scope, err := decodeStringList(value.Content[i+1])
 		if err != nil {
-			return nil, fmt.Errorf("search: %w", err)
+			return nil, true, fmt.Errorf("search: %w", err)
 		}
 		for _, entry := range scope {
 			if entry != "body" && entry != "comments" {
-				return nil, fmt.Errorf("search scope %q must be body or comments", entry)
+				return nil, true, fmt.Errorf("search scope %q must be body or comments", entry)
 			}
 		}
-		return scope, nil
+		return scope, true, nil
 	}
-	return nil, nil
+	return nil, false, nil
 }
 
-func decodeKey(key string, child *yaml.Node, search []string) (Predicate, error) {
+func decodeKey(key string, child *yaml.Node, search []string, ctx *decodeContext) (Predicate, error) {
 	switch key {
 	case "all":
-		preds, err := decodeSequence(child)
+		preds, err := decodeSequence(child, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("all: %w", err)
 		}
 		return allPredicate{preds: preds}, nil
 	case "any":
-		preds, err := decodeSequence(child)
+		preds, err := decodeSequence(child, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("any: %w", err)
 		}
 		return anyPredicate{preds: preds}, nil
 	case "not":
-		pred, err := decodeNode(child)
+		pred, err := decodeNode(child, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("not: %w", err)
 		}
@@ -129,13 +166,13 @@ func decodeKey(key string, child *yaml.Node, search []string) (Predicate, error)
 		}
 		return reasonPredicate{reasons: reasons}, nil
 	case "state":
-		state, err := decodeString(child)
+		state, err := decodeState(child)
 		if err != nil {
 			return nil, fmt.Errorf("state: %w", err)
 		}
 		return statePredicate{state: state}, nil
 	case "state_not":
-		state, err := decodeString(child)
+		state, err := decodeState(child)
 		if err != nil {
 			return nil, fmt.Errorf("state_not: %w", err)
 		}
@@ -190,13 +227,13 @@ func defaultScope(search []string) []string {
 	return []string{"body", "comments"}
 }
 
-func decodeSequence(value *yaml.Node) ([]Predicate, error) {
+func decodeSequence(value *yaml.Node, ctx *decodeContext) ([]Predicate, error) {
 	if value.Kind != yaml.SequenceNode {
 		return nil, fmt.Errorf("must be a list of conditions, got %s", kindName(value.Kind))
 	}
 	preds := make([]Predicate, 0, len(value.Content))
 	for _, item := range value.Content {
-		pred, err := decodeNode(item)
+		pred, err := decodeNode(item, ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -291,6 +328,9 @@ func parseDuration(raw string) (time.Duration, error) {
 		if err != nil || days < 0 {
 			return 0, fmt.Errorf("invalid duration %q", raw)
 		}
+		if days > maxDurationDays {
+			return 0, fmt.Errorf("duration %q is too large", raw)
+		}
 		return time.Duration(days) * 24 * time.Hour, nil
 	}
 	d, err := time.ParseDuration(raw)
@@ -300,8 +340,23 @@ func parseDuration(raw string) (time.Duration, error) {
 	return d, nil
 }
 
+// decodeState decodes a state scalar and rejects values outside the supported
+// open/closed/locked vocabulary so runtime and schema agree.
+func decodeState(value *yaml.Node) (string, error) {
+	state, err := decodeString(value)
+	if err != nil {
+		return "", err
+	}
+	switch strings.ToLower(state) {
+	case "open", "closed", "locked":
+		return state, nil
+	default:
+		return "", fmt.Errorf("must be open, closed, or locked")
+	}
+}
+
 func decodeString(value *yaml.Node) (string, error) {
-	if value.Kind != yaml.ScalarNode {
+	if value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
 		return "", fmt.Errorf("must be a single value, got %s", kindName(value.Kind))
 	}
 	if value.Value == "" {
@@ -313,7 +368,7 @@ func decodeString(value *yaml.Node) (string, error) {
 func decodeStringList(value *yaml.Node) ([]string, error) {
 	switch value.Kind {
 	case yaml.ScalarNode:
-		if value.Value == "" {
+		if value.Tag != "!!str" || value.Value == "" {
 			return nil, fmt.Errorf("must not be empty")
 		}
 		return []string{value.Value}, nil
@@ -323,7 +378,7 @@ func decodeStringList(value *yaml.Node) ([]string, error) {
 		}
 		values := make([]string, 0, len(value.Content))
 		for _, item := range value.Content {
-			if item.Kind != yaml.ScalarNode || item.Value == "" {
+			if item.Kind != yaml.ScalarNode || item.Tag != "!!str" || item.Value == "" {
 				return nil, fmt.Errorf("list entries must be non-empty values")
 			}
 			values = append(values, item.Value)

@@ -239,6 +239,31 @@ func TestMigrateConfigPreviewsByDefaultAndWritesWithBackup(t *testing.T) {
 	}
 }
 
+func TestMigrateConfigWriteForcesOwnerOnlyPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	if err := os.WriteFile(path, []byte(legacyConfigYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"migrate-config", "--config", path, "--write"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{path, path + ".bak"} {
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Fatalf("%s permissions = %o, want 0600", target, perm)
+		}
+	}
+}
+
 func TestMigrateConfigRejectsAnAlreadyCurrentConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
 	if err := os.WriteFile(path, []byte(validConfigYAML), 0600); err != nil {
