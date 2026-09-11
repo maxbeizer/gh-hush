@@ -348,10 +348,10 @@ func decodeState(value *yaml.Node) (string, error) {
 		return "", err
 	}
 	switch strings.ToLower(state) {
-	case "open", "closed", "locked":
+	case "open", "closed", "locked", "merged", "draft", "answered":
 		return state, nil
 	default:
-		return "", fmt.Errorf("must be open, closed, or locked")
+		return "", fmt.Errorf("must be open, closed, locked, merged, draft, or answered")
 	}
 }
 

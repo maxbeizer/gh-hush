@@ -181,7 +181,7 @@ A condition is data, not an expression language. Sibling keys of a mapping form 
 | --- | --- |
 | `repository` | `owner`, `owner_not`, or `any_of` with `owner/repo` names and globs such as `github/dependency-*`. A bare value or list is shorthand for `any_of`. Matching is case-insensitive. |
 | `subject_type` | `PullRequest`, `Issue`, `Discussion`, `Commit`, `Release`, `CheckSuite`. |
-| `state` / `state_not` | `open`, `closed`, `locked`. A locked Discussion counts as open until it has been closed. |
+| `state` / `state_not` | `open`, `closed`, `locked`, `merged`, `draft`, `answered`. A locked Discussion counts as open until it has been closed. `merged` and `draft` apply to pull requests; `answered` applies to Discussions. |
 | `reason` | GitHub's notification `reason`, for example `mention`, `assign`, `author`, `review_requested`. |
 | `author`, `assignee`, `review_requested` | A login or `me`. `assignee` and `review_requested` apply only to Issues and pull requests. |
 | `review_requested_team` | A team slug or `my_teams`. Team slugs match only within the notification's own owner. |

@@ -135,7 +135,7 @@ func TestPublishedSchemaEnforcesRuntimeConstraints(t *testing.T) {
 		{"empty predicate", strings.Replace(validYAML, "      reason: [mention]", "      {}", 1), false},
 		{"empty string predicate", strings.Replace(validYAML, "      reason: [mention]", "      author: \"\"", 1), false},
 		{"non-string predicate value", strings.Replace(validYAML, "      reason: [mention]", "      author: true", 1), false},
-		{"invalid state value", strings.Replace(validYAML, "      reason: [mention]", "      state: draft", 1), false},
+		{"invalid state value", strings.Replace(validYAML, "      reason: [mention]", "      state: nonsense", 1), false},
 		{"search without mention sibling", strings.Replace(validYAML, "      reason: [mention]", "      reason: [mention]\n      search: [comments]", 1), false},
 		{"recursive composition", strings.Replace(validYAML, "      reason: [mention]", "      any:\n        - all:\n            - not:\n                reason: [subscribed]\n            - subject_type: [Issue]", 1), true},
 		{"recommended template", string(RecommendedConfigYAML("octocat", "github", []string{"github/notifications"})), true},

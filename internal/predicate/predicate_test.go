@@ -30,7 +30,7 @@ func TestDecodeRejectsMalformedConditions(t *testing.T) {
 		{"negative day duration", "when:\n  age:\n    older_than: -3d", `invalid duration "-3d"`},
 		{"unknown search scope", "when:\n  mentions_team: my_teams\n  search: [title]", `search scope "title" must be body or comments`},
 		{"search is a mapping", "when:\n  mentions_user: me\n  search: {body: true}", "search"},
-		{"unsupported state value", "when:\n  state: draft", "must be open, closed, or locked"},
+		{"unsupported state value", "when:\n  state: nonsense", "must be open, closed, locked, merged, draft, or answered"},
 		{"search without a mention sibling", "when:\n  reason: mention\n  search: [comments]", "exactly one sibling"},
 		{"non-string scalar", "when:\n  author: true", "must be a single value"},
 		{"oversized day duration", "when:\n  age:\n    older_than: 999999999d", "too large"},
@@ -296,6 +296,37 @@ func TestAgeComparesAgainstTheNotificationUpdateTime(t *testing.T) {
 }
 
 var testIdentity = Identity{User: "octocat", Organization: "github", Teams: []string{"github/notifications"}}
+
+func TestStatePredicateSupportsPullRequestAndDiscussionSubStates(t *testing.T) {
+	answered := "2024-01-01T00:00:00Z"
+	for _, tt := range []struct {
+		name        string
+		condition   string
+		subjectType string
+		subject     model.Resource
+		want        bool
+	}{
+		{"merged pull request", "state: merged", "PullRequest", model.Resource{State: "closed", Merged: true}, true},
+		{"closed but unmerged", "state: merged", "PullRequest", model.Resource{State: "closed"}, false},
+		{"merged only matches pull requests", "state: merged", "Issue", model.Resource{State: "closed", Merged: true}, false},
+		{"draft pull request", "state: draft", "PullRequest", model.Resource{State: "open", Draft: true}, true},
+		{"draft excludes closed", "state: draft", "PullRequest", model.Resource{State: "closed", Draft: true}, false},
+		{"answered discussion", "state: answered", "Discussion", model.Resource{State: "open", AnswerChosenAt: &answered}, true},
+		{"unanswered discussion", "state: answered", "Discussion", model.Resource{State: "open"}, false},
+		{"state_not merged keeps open work", "state_not: merged", "PullRequest", model.Resource{State: "open"}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			node, err := decode("when:\n  " + tt.condition)
+			if err != nil {
+				t.Fatal(err)
+			}
+			matched, err := node.Match(newTestEvidence(notification("github/repo", tt.subjectType, "subscribed"), tt.subject, nil))
+			if err != nil || matched != tt.want {
+				t.Fatalf("matched=%v err=%v want=%v", matched, err, tt.want)
+			}
+		})
+	}
+}
 
 func TestSubjectValueTracksTheLastFetchedSubject(t *testing.T) {
 	evidence := NewEvidence(notification("github/repo", "Issue", "subscribed"), testIdentity,

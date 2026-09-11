@@ -32,6 +32,9 @@ type Resource struct {
 	Body               string  `json:"body"`
 	State              string  `json:"state"`
 	StateReason        *string `json:"state_reason"`
+	Merged             bool    `json:"merged"`
+	Draft              bool    `json:"draft"`
+	AnswerChosenAt     *string `json:"answer_chosen_at"`
 	User               User    `json:"user"`
 	Author             User    `json:"author"`
 	Assignees          []User  `json:"assignees"`

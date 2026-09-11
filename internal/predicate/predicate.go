@@ -318,6 +318,12 @@ func stateMatches(want, subjectType string, subject model.Resource) bool {
 		return stateIsClosed(subjectType, subject)
 	case "locked":
 		return subject.State == "locked"
+	case "merged":
+		return subjectType == "PullRequest" && subject.Merged
+	case "draft":
+		return subjectType == "PullRequest" && subject.Draft && subject.State == "open"
+	case "answered":
+		return subjectType == "Discussion" && subject.AnswerChosenAt != nil
 	default:
 		return false
 	}
