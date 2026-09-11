@@ -37,6 +37,36 @@ func TestApplyHushActionsSuccessAndEndpointOrdering(t *testing.T) {
 	}
 }
 
+func TestApplyQuietPrintsOnlyConciseSuccess(t *testing.T) {
+	item := notification("1", "subscribed")
+	var out strings.Builder
+	if err := ApplyQuiet(context.Background(), &out, testConfig(), &fakeClient{}, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "Done: 1 notification updated.\n"; got != want {
+		t.Fatalf("output=%q want=%q", got, want)
+	}
+}
+
+func TestApplyQuietSuppressesSafeSkipsAndKeepsFailuresActionable(t *testing.T) {
+	first, second := notification("1", "subscribed"), notification("2", "subscribed")
+	client := &fakeClient{
+		getResults:          map[string][]fakeGetResult{"1": {{found: false}}},
+		unsubscribeFailures: map[string]error{"2": errors.New("request exhausted 3 attempts")},
+	}
+	var out strings.Builder
+	err := ApplyQuiet(context.Background(), &out, testConfig(), client, []model.Decision{
+		{Thread: first, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"},
+		{Thread: second, Action: model.ActionUnsubscribeAndMarkDone, URL: "two"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "1 of 2 notification updates failed") || !strings.Contains(err.Error(), "request exhausted 3 attempts") {
+		t.Fatalf("err=%v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("quiet failure output=%q", out.String())
+	}
+}
+
 func TestApplyDoesNotMarkDoneAfterUnsubscribeFailureAndContinues(t *testing.T) {
 	first, second := notification("1", "subscribed"), notification("2", "subscribed")
 	client := &fakeClient{unsubscribeFailures: map[string]error{"1": errors.New("request exhausted 3 attempts")}}

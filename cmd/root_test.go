@@ -115,9 +115,9 @@ func TestNoArgsRunsDefaultOperation(t *testing.T) {
 	_ = os.MkdirAll(dir, 0755)
 	_ = os.WriteFile(filepath.Join(dir, "config.yml"), []byte(validConfigYAML), 0600)
 	called := false
-	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, cfg config.Config, dry, confirm, debug bool) error {
+	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, cfg config.Config, dry, confirm, quiet, debug bool) error {
 		called = true
-		if cfg.User != "octocat" || dry || confirm || debug {
+		if cfg.User != "octocat" || dry || confirm || quiet || debug {
 			t.Fail()
 		}
 		return nil
@@ -134,7 +134,7 @@ func TestDebugFlagIsOptIn(t *testing.T) {
 	_ = os.MkdirAll(dir, 0755)
 	_ = os.WriteFile(filepath.Join(dir, "config.yml"), []byte(validConfigYAML), 0600)
 	called := false
-	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, _ config.Config, _, _, debug bool) error {
+	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, _ config.Config, _, _, _, debug bool) error {
 		called = true
 		if !debug {
 			t.Fatal("--debug was not passed to the operation")
@@ -153,7 +153,7 @@ func TestValidateConfigDoesNotRunOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	command := newRootCommand(&out, io.Discard, func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool, bool) error {
+	command := newRootCommand(&out, io.Discard, func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool, bool, bool) error {
 		t.Fatal("run operation should not be called")
 		return nil
 	})
@@ -192,6 +192,44 @@ func TestDryRunAndConfirmAreMutuallyExclusive(t *testing.T) {
 	command.SetArgs([]string{"--dry-run", "--confirm"})
 	if err := command.Execute(); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestQuietAndDebugAreMutuallyExclusive(t *testing.T) {
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"--quiet", "--debug"})
+	if err := command.Execute(); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestQuietFlagIsPassedToOperationAndDocumentedInHelp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(validConfigYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	called := false
+	command := newRootCommand(&out, io.Discard, func(_ *cobra.Command, _, _ io.Writer, _ config.Config, _, _, quiet, _ bool) error {
+		called = true
+		if !quiet {
+			t.Fatal("--quiet was not passed to the operation")
+		}
+		return nil
+	})
+	command.SetArgs([]string{"--quiet", "--config", path})
+	if err := command.Execute(); err != nil || !called {
+		t.Fatalf("err=%v called=%v", err, called)
+	}
+
+	out.Reset()
+	command = NewRootCommand(&out, io.Discard)
+	command.SetArgs([]string{"--help"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "--quiet") || !strings.Contains(out.String(), "concise result to stderr") {
+		t.Fatalf("help=%q", out.String())
 	}
 }
 func TestPreviewEvidenceFailureSafetyKeepIsNotEligible(t *testing.T) {

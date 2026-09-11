@@ -25,7 +25,7 @@ import (
 // Version is replaced with the release tag by GoReleaser.
 var Version = "dev"
 
-type runFunc func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool, bool) error
+type runFunc func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool, bool, bool) error
 
 func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 	return newRootCommand(stdout, stderr, run)
@@ -33,7 +33,7 @@ func NewRootCommand(stdout, stderr io.Writer) *cobra.Command {
 
 func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Command {
 	var configPath string
-	var dryRun, confirm, debug bool
+	var dryRun, confirm, quiet, debug bool
 	resolveConfigPath := func(cmd *cobra.Command) (string, bool, error) {
 		provided := cmd.Flags().Changed("config")
 		if provided {
@@ -64,7 +64,7 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 				}
 				return err
 			}
-			return runOperation(cmd, stdout, stderr, cfg, dryRun, confirm, debug)
+			return runOperation(cmd, stdout, stderr, cfg, dryRun, confirm, quiet, debug)
 		},
 	}
 	rootCmd.SetOut(stdout)
@@ -72,8 +72,10 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 	rootCmd.PersistentFlags().StringVar(&configPath, "config", "", "override the default user-owned YAML policy path")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", false, "classify notifications without prompting or mutating GitHub")
 	rootCmd.Flags().BoolVar(&confirm, "confirm", false, "unsubscribe from and mark proposed notifications Done without prompting")
+	rootCmd.Flags().BoolVar(&quiet, "quiet", false, "suppress the preview and print only a concise result to stderr")
 	rootCmd.Flags().BoolVar(&debug, "debug", false, "write request and workflow diagnostics to stderr")
 	rootCmd.MarkFlagsMutuallyExclusive("dry-run", "confirm")
+	rootCmd.MarkFlagsMutuallyExclusive("quiet", "debug")
 	var initUser, initOrganization string
 	var initTeams []string
 	initCmd := &cobra.Command{
@@ -115,7 +117,7 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 	return rootCmd
 }
 
-func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dryRun, confirm, debug bool) error {
+func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dryRun, confirm, quiet, debug bool) error {
 	ctx := command.Context()
 	if debug {
 		logger := diagnostic.New(stderr)
@@ -127,7 +129,9 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 	runStart := now()
 	var confirmationWait time.Duration
 	printTotalRuntime := func() {
-		_, _ = fmt.Fprintf(stderr, "total runtime: %s (excludes interactive confirmation wait)\n", formatDuration(now().Sub(runStart)-confirmationWait))
+		if !quiet {
+			_, _ = fmt.Fprintf(stderr, "total runtime: %s (excludes interactive confirmation wait)\n", formatDuration(now().Sub(runStart)-confirmationWait))
+		}
 	}
 	inboxStart := now()
 	client, err := ghclient.NewCLIClient(ctx)
@@ -152,24 +156,45 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 		return fmt.Errorf("fetch unread GitHub notifications: %w", err)
 	}
 	diagnostic.Log(listCtx, "operation_complete", diagnostic.String("operation", "list_notifications"), diagnostic.Int("count", len(threads)))
-	_, _ = fmt.Fprintf(stderr, "authenticated and listed %d unread %s in %s\n", len(threads), notificationWord(len(threads)), formatDuration(now().Sub(inboxStart)))
-	evaluator := policy.NewEvaluator(cfg, client)
-	decisions := classifyNotifications(ctx, stderr, evaluator, threads)
-	reportCtx := diagnostic.WithPhase(ctx, "report")
-	reportStart := now()
-	if err := report.Write(stdout, decisions); err != nil {
-		diagnostic.Log(reportCtx, "operation_failed", diagnostic.String("operation", "write_preview"))
-		return fmt.Errorf("write preview report: %w", err)
+	if !quiet {
+		_, _ = fmt.Fprintf(stderr, "authenticated and listed %d unread %s in %s\n", len(threads), notificationWord(len(threads)), formatDuration(now().Sub(inboxStart)))
 	}
-	diagnostic.Log(reportCtx, "operation_complete", diagnostic.String("operation", "write_preview"), diagnostic.Int("count", len(decisions)))
-	_, _ = fmt.Fprintf(stderr, "generated preview report in %s\n", formatDuration(now().Sub(reportStart)))
+	evaluator := policy.NewEvaluator(cfg, client)
+	classificationOutput := stderr
+	if quiet {
+		classificationOutput = io.Discard
+	}
+	decisions := classifyNotifications(ctx, classificationOutput, evaluator, threads)
+	if !quiet {
+		reportCtx := diagnostic.WithPhase(ctx, "report")
+		reportStart := now()
+		if err := report.Write(stdout, decisions); err != nil {
+			diagnostic.Log(reportCtx, "operation_failed", diagnostic.String("operation", "write_preview"))
+			return fmt.Errorf("write preview report: %w", err)
+		}
+		diagnostic.Log(reportCtx, "operation_complete", diagnostic.String("operation", "write_preview"), diagnostic.Int("count", len(decisions)))
+		_, _ = fmt.Fprintf(stderr, "generated preview report in %s\n", formatDuration(now().Sub(reportStart)))
+	}
 	targetCount := countHushActions(decisions)
-	if dryRun || targetCount == 0 {
+	if dryRun {
+		if quiet {
+			_, _ = fmt.Fprintf(stderr, "Would update %d %s.\n", targetCount, notificationWord(targetCount))
+		}
+		printTotalRuntime()
+		return nil
+	}
+	if targetCount == 0 {
+		if quiet {
+			_, _ = fmt.Fprintln(stderr, "Done: no notification updates needed.")
+		}
 		printTotalRuntime()
 		return nil
 	}
 	if !confirm {
-		if !isTerminal(command.InOrStdin()) || !isTerminal(command.OutOrStdout()) || !isTerminal(command.ErrOrStderr()) {
+		if !isTerminal(command.InOrStdin()) || !isTerminal(command.ErrOrStderr()) || (!quiet && !isTerminal(command.OutOrStdout())) {
+			if quiet {
+				return errors.New("confirmation requires an interactive terminal; rerun with --confirm")
+			}
 			_, _ = fmt.Fprintln(stderr, "Preview only: input, preview output, and prompt output must all be interactive terminals. Re-run with --confirm to apply these changes.")
 			printTotalRuntime()
 			return nil
@@ -185,6 +210,9 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 			printTotalRuntime()
 			return nil
 		}
+	}
+	if quiet {
+		return application.ApplyQuiet(ctx, stderr, cfg, client, decisions)
 	}
 	err = application.Apply(ctx, stderr, cfg, client, decisions, isTerminal(stderr))
 	printTotalRuntime()
