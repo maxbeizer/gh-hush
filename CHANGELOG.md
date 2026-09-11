@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Replace the flat `keep`/`hush` booleans with `version: 3`: an explicit `identity`, a terminal `defaults.action`, a `defaults.on_missing_evidence` safety posture, and an ordered list of data-described `rules` evaluated first-match-wins. The matching rule's `name` is the evidence reported in previews.
+- Express conditions as a closed, composable vocabulary (`any`, `all`, `not` over `repository`, `subject_type`, `state`, `state_not`, `reason`, `author`, `assignee`, `review_requested`, `review_requested_team`, `mentions_user`, `mentions_team`, `age`), so new protections are rules users write rather than new configuration fields and Go branches. Repository matching supports globs such as `github/dependency-*`.
+- Derive evidence acquisition from evaluation: each predicate fetches only the GitHub resource it inspects, at most once per notification, which removes the hand-maintained mirror between evidence planning and classification.
+- Keep safety non-configurable and evaluated before any rule: only `Issue`, `PullRequest`, `Discussion`, `Commit`, `Release`, and `CheckSuite` are eligible for hushing.
+- Write the version 3 recommended policy from `gh hush init-config`, reproducing the previous default protections as explicit, editable rules.
+
+### Added
+
+- Add `gh hush migrate-config`, which mechanically rewrites a pre-v3 configuration as an equivalent version 3 policy. It previews by default and requires `--write` to rewrite the file in place, keeping a `.bak` backup.
+
 ## [0.3.0] - 2026-09-09
 
 ### Added

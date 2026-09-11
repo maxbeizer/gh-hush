@@ -112,6 +112,40 @@ func newRootCommand(stdout, stderr io.Writer, runOperation runFunc) *cobra.Comma
 			return err
 		},
 	})
+	var migrateForce bool
+	migrateCmd := &cobra.Command{
+		Use:   "migrate-config",
+		Short: "Rewrite an older configuration as an equivalent version 3 policy",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path, _, err := resolveConfigPath(cmd)
+			if err != nil {
+				return err
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("read config %q: %w", path, err)
+			}
+			migrated, err := config.Migrate(data)
+			if err != nil {
+				return fmt.Errorf("migrate config %q: %w", path, err)
+			}
+			if !migrateForce {
+				_, err = fmt.Fprintf(stdout, "%s\n# Preview only. Re-run with --write to overwrite %s (a .bak backup is kept).\n", migrated, path)
+				return err
+			}
+			if err := os.WriteFile(path+".bak", data, 0600); err != nil {
+				return fmt.Errorf("back up config %q: %w", path, err)
+			}
+			if err := os.WriteFile(path, migrated, 0600); err != nil {
+				return fmt.Errorf("write migrated config %q: %w", path, err)
+			}
+			_, err = fmt.Fprintf(stdout, "Migrated %s to version 3 (previous file saved as %s.bak).\nReview it, then run: gh hush validate-config --config %q\n", path, path, path)
+			return err
+		},
+	}
+	migrateCmd.Flags().BoolVar(&migrateForce, "write", false, "overwrite the configuration file in place, keeping a .bak backup")
+	rootCmd.AddCommand(migrateCmd)
 	return rootCmd
 }
 
@@ -141,9 +175,9 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 		diagnostic.Log(authCtx, "operation_failed", diagnostic.String("operation", "current_user"))
 		return fmt.Errorf("authenticate with gh before running gh-hush: %w", err)
 	}
-	if !strings.EqualFold(login, cfg.User) {
+	if !strings.EqualFold(login, cfg.Identity.User) {
 		diagnostic.Log(authCtx, "operation_failed", diagnostic.String("operation", "user_match"))
-		return fmt.Errorf("config user %q does not match authenticated gh user %q", cfg.User, login)
+		return fmt.Errorf("config user %q does not match authenticated gh user %q", cfg.Identity.User, login)
 	}
 	listCtx := diagnostic.WithPhase(ctx, "listing")
 	threads, err := client.ListNotifications(listCtx)

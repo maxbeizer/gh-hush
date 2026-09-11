@@ -1,12 +1,8 @@
 package config
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
-	"regexp"
-	"sort"
 	"strings"
 	"testing"
 
@@ -15,20 +11,32 @@ import (
 )
 
 const validYAML = `
-user: octocat
-github_organization: github
-team_slugs:
-  - github/notifications
-keep:
-  external_organization_issues: true
-  personally_mentioned: true
-  personally_assigned: true
-  individually_review_requested: true
-  active_team_review_requested_pull_requests: true
-  authored_by_user: true
-  team_mentioned_discussions: true
-hush:
-  all_other_notifications: true
+version: 3
+identity:
+  user: octocat
+  organization: github
+  teams:
+    - github/notifications
+defaults:
+  action: hush
+  on_missing_evidence: keep
+rules:
+  - name: keep work outside my organization
+    action: keep
+    when:
+      repository:
+        owner_not: github
+  - name: keep personal mentions
+    action: keep
+    when:
+      reason: [mention]
+  - name: keep my team's active reviews
+    action: keep
+    when:
+      all:
+        - subject_type: [PullRequest]
+        - state: open
+        - review_requested_team: my_teams
 `
 
 func TestDefaultPath(t *testing.T) {
@@ -44,153 +52,65 @@ func TestDefaultPath(t *testing.T) {
 	}
 }
 
-func TestPublishedSchemaMatchesConfigTypes(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "config.schema.json"))
+func TestParseAcceptsValidV3(t *testing.T) {
+	cfg, err := Parse([]byte(validYAML))
 	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if cfg.Version != 3 || cfg.Identity.User != "octocat" || cfg.Identity.Organization != "github" ||
+		len(cfg.Identity.Teams) != 1 || cfg.Defaults.Action != "hush" || cfg.Defaults.OnMissingEvidence != "keep" ||
+		len(cfg.Rules) != 3 || cfg.Rules[0].Name != "keep work outside my organization" {
+		t.Fatalf("parsed config = %#v", cfg)
+	}
+}
+
+func TestParseValidation(t *testing.T) {
+	tests := []struct{ name, input, want string }{
+		{"valid", validYAML, ""},
+		{"wrong version", strings.Replace(validYAML, "version: 3", "version: 2", 1), "version must be 3"},
+		{"legacy keep field", strings.Replace(validYAML, "rules:", "keep:\n  personally_mentioned: true\nrules:", 1), "older schema"},
+		{"bad user", strings.Replace(validYAML, "user: octocat", "user: octo--cat", 1), "identity.user must be a valid GitHub login"},
+		{"bad org", strings.Replace(validYAML, "organization: github", "organization: git--hub", 1), "identity.organization"},
+		{"team outside org", strings.Replace(validYAML, "github/notifications", "other/notifications", 1), "must belong"},
+		{"duplicate team", strings.Replace(validYAML, "    - github/notifications\n", "    - github/notifications\n    - GITHUB/notifications\n", 1), "duplicate"},
+		{"bad default action", strings.Replace(validYAML, "action: hush", "action: silence", 1), "defaults.action"},
+		{"bad missing posture", strings.Replace(validYAML, "on_missing_evidence: keep", "on_missing_evidence: maybe", 1), "on_missing_evidence"},
+		{"bad rule action", strings.Replace(validYAML, "    action: keep", "    action: silence", 1), "must be keep or hush"},
+		{"missing rule name", strings.Replace(validYAML, "  - name: keep personal mentions\n    action: keep\n    when:\n      reason: [mention]\n", "  - action: keep\n    when:\n      reason: [mention]\n", 1), "name is required"},
+		{"duplicate rule name", validYAML + "  - name: keep personal mentions\n    action: keep\n", "duplicate name"},
+		{"unknown predicate", strings.Replace(validYAML, "      reason: [mention]", "      nonsense: true", 1), `unknown predicate "nonsense"`},
+		{"multiple documents", validYAML + "---\nversion: 3\n", "exactly one"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.input))
+			if tt.want == "" && err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("Parse() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLegacyFieldGuidancePointsAtMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	legacy := `user: octocat
+github_organization: github
+team_slugs:
+  - github/notifications
+keep:
+  personally_mentioned: true
+hush:
+  all_other_notifications: true
+`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var schema schemaObject
-	if err := json.Unmarshal(data, &schema); err != nil {
-		t.Fatalf("parse config.schema.json: %v", err)
-	}
-	assertSchemaMatchesType(t, "config", schema, reflect.TypeOf(Config{}))
-}
-
-type schemaObject struct {
-	Type                 string                  `json:"type"`
-	Description          string                  `json:"description"`
-	Properties           map[string]schemaObject `json:"properties"`
-	PatternProperties    map[string]schemaObject `json:"patternProperties"`
-	Required             []string                `json:"required"`
-	AdditionalProperties *bool                   `json:"additionalProperties"`
-	Items                *schemaObject           `json:"items"`
-}
-
-// optionalSchemaFields are documented fields that intentionally stay absent
-// from a schema "required" list, keeping older configurations valid.
-var optionalSchemaFields = map[string]bool{
-	"config.watched_repositories":                      true,
-	"config.watched_repositories[].all_notifications":  true,
-	"config.watched_repositories[].open_pull_requests": true,
-	"config.watched_repositories[].open_issues":        true,
-	"config.watched_repositories[].open_discussions":   true,
-}
-
-func assertSchemaMatchesType(t *testing.T, path string, schema schemaObject, typ reflect.Type) {
-	t.Helper()
-	assertSchemaType(t, path, schema, typ)
-	if schema.AdditionalProperties == nil || *schema.AdditionalProperties {
-		t.Errorf("%s must reject additional properties", path)
-	}
-	var fields []string
-	var requiredFields []string
-	for i := 0; i < typ.NumField(); i++ {
-		field := typ.Field(i)
-		name := strings.Split(field.Tag.Get("yaml"), ",")[0]
-		fields = append(fields, name)
-		if !optionalSchemaFields[path+"."+name] {
-			requiredFields = append(requiredFields, name)
-		}
-		property, ok := schema.Properties[name]
-		if !ok {
-			t.Errorf("%s.%s is missing from config.schema.json", path, name)
-			continue
-		}
-		if property.Description == "" {
-			t.Errorf("%s.%s has no schema description", path, name)
-		}
-		fieldType := field.Type
-		assertSchemaType(t, path+"."+name, property, fieldType)
-		if fieldType.Kind() == reflect.Struct {
-			assertSchemaMatchesType(t, path+"."+name, property, fieldType)
-		}
-		if fieldType.Kind() == reflect.Map {
-			assertSchemaMatchesMap(t, path+"."+name, property, fieldType)
-		}
-	}
-	sort.Strings(fields)
-	sort.Strings(requiredFields)
-	schemaFields := make([]string, 0, len(schema.Properties))
-	for name := range schema.Properties {
-		schemaFields = append(schemaFields, name)
-	}
-	sort.Strings(schemaFields)
-	sort.Strings(schema.Required)
-	if !reflect.DeepEqual(schemaFields, fields) {
-		t.Errorf("%s schema fields = %v, Go fields = %v", path, schemaFields, fields)
-	}
-	if !reflect.DeepEqual(schema.Required, requiredFields) {
-		t.Errorf("%s required fields = %v, want %v", path, schema.Required, requiredFields)
-	}
-}
-
-// assertSchemaMatchesMap checks a map-valued field, whose entry schema lives
-// under exactly one patternProperties key constraining the map key syntax.
-func assertSchemaMatchesMap(t *testing.T, path string, schema schemaObject, typ reflect.Type) {
-	t.Helper()
-	if typ.Key().Kind() != reflect.String {
-		t.Fatalf("%s must use string map keys", path)
-	}
-	if len(schema.PatternProperties) != 1 {
-		t.Fatalf("%s must define exactly one patternProperties entry", path)
-	}
-	for pattern, entry := range schema.PatternProperties {
-		if _, err := regexp.Compile(pattern); err != nil {
-			t.Errorf("%s key pattern %q is invalid: %v", path, pattern, err)
-		}
-		assertSchemaMatchesType(t, path+"[]", entry, typ.Elem())
-	}
-}
-
-func assertSchemaType(t *testing.T, path string, schema schemaObject, typ reflect.Type) {
-	t.Helper()
-	if typ.Kind() == reflect.Pointer {
-		typ = typ.Elem()
-	}
-	var want string
-	switch typ.Kind() {
-	case reflect.String:
-		want = "string"
-	case reflect.Bool:
-		want = "boolean"
-	case reflect.Struct:
-		want = "object"
-	case reflect.Map:
-		want = "object"
-	case reflect.Slice:
-		want = "array"
-		if schema.Items == nil {
-			t.Errorf("%s must define array items", path)
-		} else {
-			assertSchemaType(t, path+"[]", *schema.Items, typ.Elem())
-		}
-	default:
-		t.Fatalf("%s uses unsupported Go type %s", path, typ)
-	}
-	if schema.Type != want {
-		t.Errorf("%s schema type = %q, want %q for Go type %s", path, schema.Type, want, typ)
-	}
-}
-
-func watchedYAML(repository, capabilities string) string {
-	return "watched_repositories:\n  " + repository + ":\n" + capabilities
-}
-
-func TestWatchedRepositoriesRejectCaseInsensitiveDuplicates(t *testing.T) {
-	input := validYAML + "watched_repositories:\n  github/watched:\n    open_issues: true\n  GitHub/Watched:\n    open_issues: true\n"
-	if _, err := Parse([]byte(input)); err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("Parse() error = %v, want a duplicate watched repository error", err)
-	}
-}
-
-func TestWatchedRepositoryLookupIsCaseInsensitive(t *testing.T) {
-	on := true
-	cfg := Config{WatchedRepositories: map[string]WatchedRepository{"GitHub/Watched": {AllNotifications: &on}}}
-	if watched, ok := cfg.WatchedRepository("github/watched"); !ok || !Enabled(watched.AllNotifications) {
-		t.Fatalf("WatchedRepository() = %#v, %v", watched, ok)
-	}
-	if _, ok := cfg.WatchedRepository("github/other"); ok {
-		t.Fatal("WatchedRepository() matched an unwatched repository")
+	_, _, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "migrate-config") {
+		t.Fatalf("error = %v, want migrate-config guidance", err)
 	}
 }
 
@@ -206,19 +126,14 @@ func TestPublishedSchemaEnforcesRuntimeConstraints(t *testing.T) {
 		valid bool
 	}{
 		{"valid", validYAML, true},
-		{"unknown field", validYAML + "unexpected: true\n", false},
-		{"missing required field", strings.Replace(validYAML, "  authored_by_user: true\n", "", 1), false},
-		{"hush must be true", strings.Replace(validYAML, "all_other_notifications: true", "all_other_notifications: false", 1), false},
-		{"invalid login", strings.Replace(validYAML, "user: octocat", "user: octo--cat", 1), false},
-		{"wrong boolean type", strings.Replace(validYAML, "personally_mentioned: true", "personally_mentioned: enabled", 1), false},
-		{"malformed team", strings.Replace(validYAML, "github/notifications", "github", 1), false},
-		{"duplicate team", strings.Replace(validYAML, "  - github/notifications\n", "  - github/notifications\n  - github/notifications\n", 1), false},
-		{"watched repositories", validYAML + watchedYAML("github/watched", "    open_pull_requests: true\n"), true},
-		{"watched repository outside organization", validYAML + watchedYAML("other-owner/watched", "    all_notifications: true\n"), true},
-		{"watched repository without owner", validYAML + watchedYAML("watched", "    open_issues: true\n"), false},
-		{"watched repository owner too long", validYAML + watchedYAML(strings.Repeat("a", 40)+"/watched", "    open_issues: true\n"), false},
-		{"watched repository without capabilities", validYAML + watchedYAML("github/watched", "    open_issues: false\n"), false},
-		{"watched repository unknown capability", validYAML + watchedYAML("github/watched", "    open_releases: true\n"), false},
+		{"wrong version", strings.Replace(validYAML, "version: 3", "version: 2", 1), false},
+		{"unknown top-level field", validYAML + "unexpected: true\n", false},
+		{"missing defaults", strings.Replace(validYAML, "defaults:\n  action: hush\n  on_missing_evidence: keep\n", "", 1), false},
+		{"bad default action", strings.Replace(validYAML, "action: hush", "action: silence", 1), false},
+		{"bad rule action", strings.Replace(validYAML, "    action: keep", "    action: silence", 1), false},
+		{"unknown predicate key", strings.Replace(validYAML, "      reason: [mention]", "      nonsense: true", 1), false},
+		{"recommended template", string(RecommendedConfigYAML("octocat", "github", []string{"github/notifications"})), true},
+		{"recommended template without teams", string(RecommendedConfigYAML("octocat", "github", nil)), true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -245,74 +160,88 @@ func TestPublishedSchemaEnforcesRuntimeConstraints(t *testing.T) {
 	}
 }
 
-func TestLoadAddsAgentFixPrompt(t *testing.T) {
+func TestInitializeWritesValidRecommendedPolicy(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	input := strings.Replace(validYAML, "team_slugs:", "discussion_team_slugs:", 1)
-	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
-		t.Fatal(err)
+	if err := Initialize(path, "octocat", "github", []string{"github/notifications"}); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
 	}
-
-	_, _, err := Load(path)
-	if err == nil {
-		t.Fatal("expected error")
+	cfg, _, err := Load(path)
+	if err != nil {
+		t.Fatalf("generated configuration is invalid: %v", err)
 	}
-	want := `AI prompt: In "` + path + `", rename discussion_team_slugs to team_slugs and add keep.active_team_review_requested_pull_requests as true or false.`
-	if !strings.Contains(err.Error(), want) {
-		t.Errorf("error %q does not contain %q", err, want)
+	if cfg.Identity.User != "octocat" || len(cfg.Rules) == 0 {
+		t.Fatalf("generated config = %#v", cfg)
+	}
+	if err := Initialize(path, "octocat", "github", nil); err == nil {
+		t.Fatal("Initialize() overwrote an existing file")
 	}
 }
 
-func TestDecodeErrorPreservesAllProblemsAndAddsGuidance(t *testing.T) {
-	input := strings.Replace(validYAML, "team_slugs:", "discussion_team_slugs:", 1)
-	input = strings.Replace(input, "personally_mentioned: true", "personally_mentioned: enabled", 1)
-	input += "unexpected: true\n"
-
-	_, err := Parse([]byte(input))
-	if err == nil {
-		t.Fatal("expected error")
+func TestMigrateProducesEquivalentV3(t *testing.T) {
+	legacy := `user: octocat
+github_organization: github
+team_slugs:
+  - github/notifications
+keep:
+  external_organization_issues: true
+  personally_mentioned: true
+  personally_assigned: true
+  individually_review_requested: true
+  active_team_review_requested_pull_requests: true
+  authored_by_user: true
+  team_mentioned_discussions: true
+watched_repositories:
+  github/watched:
+    open_pull_requests: true
+    open_discussions: true
+  github/allofit:
+    all_notifications: true
+hush:
+  all_other_notifications: true
+`
+	migrated, err := Migrate([]byte(legacy))
+	if err != nil {
+		t.Fatalf("Migrate() error = %v", err)
 	}
-	message := err.Error()
+	cfg, err := Parse(migrated)
+	if err != nil {
+		t.Fatalf("migrated config is invalid: %v\n%s", err, migrated)
+	}
+	if cfg.Version != 3 || cfg.Identity.User != "octocat" || cfg.Identity.Organization != "github" {
+		t.Fatalf("migrated identity = %#v", cfg.Identity)
+	}
+	var names []string
+	for _, rule := range cfg.Rules {
+		names = append(names, rule.Name)
+	}
 	for _, want := range []string{
-		`"discussion_team_slugs" was renamed to "team_slugs" in v0.2.0`,
-		`cannot unmarshal !!str`,
-		`unknown configuration field "unexpected"`,
-		configSchemaURL,
+		"keep work outside my organization",
+		"keep personal mentions",
+		"keep work assigned to me",
+		"keep review requests for me",
+		"keep work I authored",
+		"keep my team's active reviews",
+		"keep team-mentioned discussions",
+		"watch all notifications in github/allofit",
+		"watch github/watched",
 	} {
-		if !strings.Contains(message, want) {
-			t.Errorf("error %q does not contain %q", message, want)
+		if !containsString(names, want) {
+			t.Fatalf("migrated rules %v missing %q\n%s", names, want, migrated)
 		}
 	}
-	if strings.Contains(message, "type config.Config") {
-		t.Errorf("error exposes Go implementation type: %q", message)
+}
+
+func TestMigrateRejectsAlreadyV3(t *testing.T) {
+	if _, err := Migrate([]byte(validYAML)); err == nil || !strings.Contains(err.Error(), "already version 3") {
+		t.Fatalf("Migrate() error = %v", err)
 	}
 }
 
-func TestParseValidationAndHardSchemaBreak(t *testing.T) {
-	tests := []struct{ name, input, want string }{
-		{"valid", validYAML, ""},
-		{"v0.2 migration guidance", strings.Replace(validYAML, "team_slugs:", "discussion_team_slugs:", 1), `"discussion_team_slugs" was renamed to "team_slugs" in v0.2.0`},
-		{"old unsubscribe rejected", strings.Replace(validYAML, "hush:", "unsubscribe:", 1), `"unsubscribe" was replaced by "hush"`},
-		{"run mode removed", validYAML + "run_mode: ad_hoc\n", `"run_mode" is no longer supported`},
-		{"output removed", validYAML + "output:\n  default_mode: dry_run\n", `"output" is no longer supported`},
-		{"unknown", validYAML + "unexpected: true\n", `unknown configuration field "unexpected"`},
-		{"required keep flag", strings.Replace(validYAML, "  authored_by_user: true\n", "", 1), "keep.authored_by_user is required"},
-		{"required active team PR flag", strings.Replace(validYAML, "  active_team_review_requested_pull_requests: true\n", "", 1), "keep.active_team_review_requested_pull_requests is required"},
-		{"required hush", strings.Replace(validYAML, "  all_other_notifications: true\n", "", 1), "hush.all_other_notifications is required"},
-		{"hush must be true", strings.Replace(validYAML, "all_other_notifications: true", "all_other_notifications: false", 1), "hush.all_other_notifications must be true"},
-		{"bad user", strings.Replace(validYAML, "user: octocat", "user: octo--cat", 1), "valid GitHub login"},
-		{"bad team", strings.Replace(validYAML, "github/notifications", "other/notifications", 1), "must belong"},
-		{"duplicate", strings.Replace(validYAML, "  - github/notifications\n", "  - github/notifications\n  - GITHUB/notifications\n", 1), "duplicate"},
-		{"multiple documents", validYAML + "---\nuser: other\n", "exactly one"},
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := Parse([]byte(tt.input))
-			if tt.want == "" && err != nil {
-				t.Fatalf("Parse() error = %v", err)
-			}
-			if tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
-				t.Fatalf("Parse() error = %v, want %q", err, tt.want)
-			}
-		})
-	}
+	return false
 }

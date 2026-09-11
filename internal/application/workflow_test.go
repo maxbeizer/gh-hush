@@ -132,9 +132,7 @@ func TestApplyRevalidationDoesNotPreservePreviewURLAfterRepositoryChange(t *test
 func TestApplyRevalidationEvidenceFailureReturnsErrorAndContinues(t *testing.T) {
 	first, second := notification("1", "subscribed"), notification("2", "subscribed")
 	client := &fakeClient{subjectFailures: map[string]error{"1": errors.New("request exhausted 3 attempts")}}
-	cfg := testConfig()
-	on := true
-	cfg.Keep.PersonallyAssigned = &on
+	cfg := configWithAssignmentRule()
 	var out strings.Builder
 	err := apply(context.Background(), &out, cfg, client, []model.Decision{
 		{Thread: first, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"},
@@ -204,7 +202,7 @@ func TestApplyRevalidationSkipsMissingNoLongerUnreadOrNewlyProtected(t *testing.
 		if err := apply(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: preview, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
 			t.Fatal(err)
 		}
-		if len(client.calls) != 0 || !strings.Contains(out.String(), "- protected: 1") || !strings.Contains(out.String(), "keep.personal_mention") {
+		if len(client.calls) != 0 || !strings.Contains(out.String(), "- protected: 1") || !strings.Contains(out.String(), "keep personal mentions") {
 			t.Fatalf("calls=%v out=%s", client.calls, out.String())
 		}
 	})
@@ -580,10 +578,53 @@ func notification(id, reason string) model.Notification {
 	return model.Notification{ID: id, Unread: true, Reason: reason, Repository: model.Repository{FullName: "github/repo"}, Subject: model.Subject{Type: "Issue", URL: "subject"}}
 }
 func testConfig() config.Config {
-	on := true
-	off := false
-	cfg := config.Config{User: "octocat", GitHubOrganization: "github", Keep: config.Keep{ExternalOrganizationIssues: &on, PersonallyMentioned: &on, PersonallyAssigned: &off, IndividuallyReviewRequested: &off, AuthoredByUser: &off, TeamMentionedDiscussions: &off}}
-	cfg.Hush.AllOtherNotifications = &on
+	cfg, err := config.Parse([]byte(`version: 3
+identity:
+  user: octocat
+  organization: github
+  teams: []
+defaults:
+  action: hush
+  on_missing_evidence: keep
+rules:
+  - name: keep work outside my organization
+    action: keep
+    when:
+      repository:
+        owner_not: github
+  - name: keep personal mentions
+    action: keep
+    when:
+      reason: [mention]
+`))
+	if err != nil {
+		panic(err)
+	}
+	return cfg
+}
+
+func configWithAssignmentRule() config.Config {
+	cfg, err := config.Parse([]byte(`version: 3
+identity:
+  user: octocat
+  organization: github
+  teams: []
+defaults:
+  action: hush
+  on_missing_evidence: keep
+rules:
+  - name: keep work assigned to me
+    action: keep
+    when:
+      any:
+        - reason: [assign]
+        - all:
+            - subject_type: [Issue, PullRequest]
+            - assignee: me
+`))
+	if err != nil {
+		panic(err)
+	}
 	return cfg
 }
 
