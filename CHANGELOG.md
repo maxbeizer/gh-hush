@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+### Fixed
+
+- Point the configuration error's AI-prompt summary line at `gh hush migrate-config` for legacy-field errors instead of falling back to generic "fix the errors" guidance.
+
 ## [0.4.0] - 2026-09-11
 
 ### Changed

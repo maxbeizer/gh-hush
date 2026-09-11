@@ -194,7 +194,7 @@ func (c Config) validateTeams() []error {
 
 func configFixPrompt(path string, err error) string {
 	message := err.Error()
-	if strings.Contains(message, "version must be") || strings.Contains(message, "keep:") || strings.Contains(message, "discussion_team_slugs") {
+	if strings.Contains(message, "migrate-config") || strings.Contains(message, "older schema") || strings.Contains(message, "version must be") || strings.Contains(message, "discussion_team_slugs") {
 		return fmt.Sprintf("The configuration at %q uses an older schema. Run: gh hush migrate-config --config %q to rewrite it as version %d.", path, path, Version)
 	}
 	return fmt.Sprintf("Fix the configuration errors above in %q, preserving the policy's intent.", path)
