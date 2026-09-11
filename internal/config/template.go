@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -172,7 +173,7 @@ func Migrate(data []byte) ([]byte, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&legacy); err != nil {
-		return nil, fmt.Errorf("read existing configuration: %w", err)
+		return nil, legacyDecodeError(err)
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, errors.New("configuration must contain exactly one YAML document")
@@ -210,6 +211,37 @@ func Migrate(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("migration produced an invalid configuration: %w", err)
 	}
 	return migrated, nil
+}
+
+// legacyDecodeError turns yaml.v3 unknown-field errors from strict legacy
+// decoding into guidance that names renamed and removed pre-v3 fields instead
+// of leaking the Go type name.
+func legacyDecodeError(err error) error {
+	var typeErr *yaml.TypeError
+	if !errors.As(err, &typeErr) {
+		return fmt.Errorf("read existing configuration: %w", err)
+	}
+	unknownField := regexp.MustCompile(`^line ([0-9]+): field ([^ ]+) not found in type .+$`)
+	problems := make([]string, 0, len(typeErr.Errors))
+	for _, problem := range typeErr.Errors {
+		match := unknownField.FindStringSubmatch(problem)
+		if match == nil {
+			problems = append(problems, problem)
+			continue
+		}
+		line, field := match[1], match[2]
+		switch field {
+		case "discussion_team_slugs":
+			problems = append(problems, fmt.Sprintf(`line %s: %q was renamed to "team_slugs" in v0.2.0; rename it before migrating to version %d`, line, field, Version))
+		case "unsubscribe":
+			problems = append(problems, fmt.Sprintf(`line %s: %q was replaced by "hush"; update it before migrating to version %d`, line, field, Version))
+		case "run_mode", "output":
+			problems = append(problems, fmt.Sprintf(`line %s: %q is no longer supported and must be removed before migrating to version %d`, line, field, Version))
+		default:
+			problems = append(problems, fmt.Sprintf(`line %s: unknown configuration field %q cannot be migrated automatically; remove it or fix the typo`, line, field))
+		}
+	}
+	return fmt.Errorf("read existing configuration:\n  %s", strings.Join(problems, "\n  "))
 }
 
 func migrateRules(legacy legacyConfig) []string {

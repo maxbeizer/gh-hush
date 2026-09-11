@@ -239,7 +239,10 @@ hush:
 
 func TestMigrateRejectsUnknownAndMultiDocumentInput(t *testing.T) {
 	for _, tt := range []struct{ name, input, want string }{
-		{"unknown field", "user: octocat\ngithub_organization: github\nmystery: true\n", "read existing configuration"},
+		{"unknown field", "user: octocat\ngithub_organization: github\nmystery: true\n", "unknown configuration field \"mystery\" cannot be migrated automatically"},
+		{"renamed discussion_team_slugs", "user: octocat\ngithub_organization: github\ndiscussion_team_slugs: [github/notifications]\n", `was renamed to "team_slugs"`},
+		{"removed unsubscribe", "user: octocat\ngithub_organization: github\nunsubscribe: true\n", `was replaced by "hush"`},
+		{"removed run_mode", "user: octocat\ngithub_organization: github\nrun_mode: auto\n", "no longer supported"},
 		{"multiple documents", "user: octocat\ngithub_organization: github\n---\nuser: other\n", "exactly one"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
