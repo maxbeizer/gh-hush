@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-11
+
 ### Changed
 
 - **Breaking:** Replace the flat `keep`/`hush` booleans with `version: 3`: an explicit `identity`, a terminal `defaults.action`, a `defaults.on_missing_evidence` safety posture, and an ordered list of data-described `rules` evaluated first-match-wins. The matching rule's `name` is the evidence reported in previews.
@@ -127,7 +129,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 - `--dry-run` for a guaranteed preview-only run.
 - Initial release.
 
-[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/maxbeizer/gh-hush/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/maxbeizer/gh-hush/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/maxbeizer/gh-hush/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/maxbeizer/gh-hush/compare/v0.2.0...v0.2.1
