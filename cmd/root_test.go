@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -115,9 +116,9 @@ func TestNoArgsRunsDefaultOperation(t *testing.T) {
 	_ = os.MkdirAll(dir, 0755)
 	_ = os.WriteFile(filepath.Join(dir, "config.yml"), []byte(validConfigYAML), 0600)
 	called := false
-	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, cfg config.Config, dry, confirm, debug bool) error {
+	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, cfg config.Config, dry, confirm, quiet, debug bool) error {
 		called = true
-		if cfg.User != "octocat" || dry || confirm || debug {
+		if cfg.User != "octocat" || dry || confirm || quiet || debug {
 			t.Fail()
 		}
 		return nil
@@ -134,7 +135,7 @@ func TestDebugFlagIsOptIn(t *testing.T) {
 	_ = os.MkdirAll(dir, 0755)
 	_ = os.WriteFile(filepath.Join(dir, "config.yml"), []byte(validConfigYAML), 0600)
 	called := false
-	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, _ config.Config, _, _, debug bool) error {
+	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, _ config.Config, _, _, _, debug bool) error {
 		called = true
 		if !debug {
 			t.Fatal("--debug was not passed to the operation")
@@ -153,7 +154,7 @@ func TestValidateConfigDoesNotRunOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out strings.Builder
-	command := newRootCommand(&out, io.Discard, func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool, bool) error {
+	command := newRootCommand(&out, io.Discard, func(*cobra.Command, io.Writer, io.Writer, config.Config, bool, bool, bool, bool) error {
 		t.Fatal("run operation should not be called")
 		return nil
 	})
@@ -194,6 +195,150 @@ func TestDryRunAndConfirmAreMutuallyExclusive(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestQuietAndDebugAreMutuallyExclusive(t *testing.T) {
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"--quiet", "--debug"})
+	if err := command.Execute(); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestQuietFlagIsPassedToOperationAndDocumentedInHelp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(validConfigYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	called := false
+	command := newRootCommand(&out, io.Discard, func(_ *cobra.Command, _, _ io.Writer, _ config.Config, _, _, quiet, _ bool) error {
+		called = true
+		if !quiet {
+			t.Fatal("--quiet was not passed to the operation")
+		}
+		return nil
+	})
+	command.SetArgs([]string{"--quiet", "--config", path})
+	if err := command.Execute(); err != nil || !called {
+		t.Fatalf("err=%v called=%v", err, called)
+	}
+
+	out.Reset()
+	command = NewRootCommand(&out, io.Discard)
+	command.SetArgs([]string{"--help"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "--quiet") || !strings.Contains(out.String(), "concise result to stderr") {
+		t.Fatalf("help=%q", out.String())
+	}
+}
+func TestRunQuietOutcomes(t *testing.T) {
+	eligible := model.Decision{Thread: notification("1", "subscribed"), Action: model.ActionUnsubscribeAndMarkDone}
+
+	t.Run("confirmed", func(t *testing.T) {
+		var stderr strings.Builder
+		applied := false
+		command := &cobra.Command{}
+		command.SetIn(strings.NewReader("must not be read"))
+		err := runQuiet(command, &stderr, []model.Decision{eligible}, false, true, false, func() error {
+			applied = true
+			_, _ = fmt.Fprintln(&stderr, "Done: 1 notification updated.")
+			return nil
+		})
+		if err != nil || !applied || stderr.String() != "Done: 1 notification updated.\n" {
+			t.Fatalf("err=%v applied=%v stderr=%q", err, applied, stderr.String())
+		}
+	})
+
+	t.Run("interactive approved", func(t *testing.T) {
+		var stderr strings.Builder
+		command := &cobra.Command{}
+		command.SetIn(strings.NewReader("y\n"))
+		applied := false
+		err := runQuiet(command, &stderr, []model.Decision{eligible}, false, false, true, func() error {
+			applied = true
+			_, _ = fmt.Fprintln(&stderr, "Done: 1 notification updated.")
+			return nil
+		})
+		if err != nil || !applied || stderr.String() != "Unsubscribe from and mark 1 notifications Done? [y/N] Done: 1 notification updated.\n" {
+			t.Fatalf("err=%v applied=%v stderr=%q", err, applied, stderr.String())
+		}
+	})
+
+	t.Run("declined", func(t *testing.T) {
+		var stderr strings.Builder
+		command := &cobra.Command{}
+		command.SetIn(strings.NewReader("n\n"))
+		err := runQuiet(command, &stderr, []model.Decision{eligible}, false, false, true, func() error {
+			t.Fatal("declined run applied changes")
+			return nil
+		})
+		if err != nil || stderr.String() != "Unsubscribe from and mark 1 notifications Done? [y/N] No changes made.\n" {
+			t.Fatalf("err=%v stderr=%q", err, stderr.String())
+		}
+	})
+
+	t.Run("dry run", func(t *testing.T) {
+		var stderr strings.Builder
+		err := runQuiet(&cobra.Command{}, &stderr, []model.Decision{eligible}, true, false, false, func() error {
+			t.Fatal("dry run applied changes")
+			return nil
+		})
+		if err != nil || stderr.String() != "Would update 1 notification.\n" {
+			t.Fatalf("err=%v stderr=%q", err, stderr.String())
+		}
+	})
+
+	t.Run("no target", func(t *testing.T) {
+		var stderr strings.Builder
+		err := runQuiet(&cobra.Command{}, &stderr, nil, false, false, false, func() error {
+			t.Fatal("no-target run applied changes")
+			return nil
+		})
+		if err != nil || stderr.String() != "Done: no notification updates needed.\n" {
+			t.Fatalf("err=%v stderr=%q", err, stderr.String())
+		}
+	})
+
+	t.Run("non-interactive", func(t *testing.T) {
+		err := runQuiet(&cobra.Command{}, io.Discard, []model.Decision{eligible}, false, false, false, func() error {
+			t.Fatal("non-interactive run applied changes")
+			return nil
+		})
+		if err == nil || err.Error() != "confirmation requires an interactive terminal; rerun with --confirm" {
+			t.Fatalf("err=%v", err)
+		}
+	})
+
+	t.Run("apply failure", func(t *testing.T) {
+		want := errors.New("1 of 1 notification updates failed: unsubscribe failed")
+		err := runQuiet(&cobra.Command{}, io.Discard, []model.Decision{eligible}, false, true, false, func() error { return want })
+		if !errors.Is(err, want) {
+			t.Fatalf("err=%v", err)
+		}
+	})
+}
+
+func TestRunQuietClassificationFailuresAreActionable(t *testing.T) {
+	decisions := []model.Decision{
+		{Thread: notification("1", "subscribed"), Action: model.ActionKeep, EnrichmentError: "subject request failed"},
+		{Thread: notification("2", "subscribed"), Action: model.ActionUnsubscribeAndMarkDone, EnrichmentError: "comments request failed"},
+	}
+	for _, dryRun := range []bool{false, true} {
+		var stderr strings.Builder
+		err := runQuiet(&cobra.Command{}, &stderr, decisions, dryRun, true, false, func() error {
+			t.Fatal("classification failure applied changes")
+			return nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "classification failed for 2 notifications") ||
+			!strings.Contains(err.Error(), "notification 1: subject request failed") ||
+			!strings.Contains(err.Error(), "notification 2: comments request failed") || stderr.Len() != 0 {
+			t.Fatalf("dryRun=%v err=%v stderr=%q", dryRun, err, stderr.String())
+		}
+	}
+}
+
 func TestPreviewEvidenceFailureSafetyKeepIsNotEligible(t *testing.T) {
 	safetyKeep := model.Decision{
 		Thread:          model.Notification{ID: "safe"},

@@ -19,11 +19,16 @@ gh extension install maxbeizer/gh-hush
 gh hush             # preview; prompt with default No when fully interactive
 gh hush --dry-run   # preview only
 gh hush --confirm   # preview and apply without prompting
+gh hush --quiet     # no preview; prompt, then print one concise result to stderr
+gh hush --quiet --confirm # no preview or prompt; apply and print one concise result
+gh hush --quiet --dry-run # no mutation; print only the eligible target count
 gh hush --debug     # add request/workflow diagnostics on stderr
 gh hush --version   # print the installed release version
 ```
 
 A no-flag invocation is preview-only unless stdin, preview output, and prompt output are all interactive terminals. Redirected or piped execution requires `--confirm` to mutate GitHub. `--dry-run` and `--confirm` are mutually exclusive.
+
+Quiet mode suppresses the preview, progress, timings, safe skip details, and application summary. Its confirmation prompt and final result are written to stderr. Without `--confirm`, `--quiet` requires interactive stdin and stderr and fails with guidance rather than falling back to preview-only behavior. Declining prints `No changes made.`; no eligible targets prints `Done: no notification updates needed.` Classification and apply failures remain nonzero and include the underlying actionable error. `--quiet` and `--debug` are mutually exclusive.
 
 The complete preview unconditionally shows every discovered notification's URL, subject type, repository, reason, proposed action, and matching policy evidence. Authentication, notification listing, configuration, and report-generation failures return nonzero without mutation. A required preview evidence failure is reported and conservatively safety-keeps that notification; it is not an eligible mutation target. Declining confirmation, having no eligible targets, a missing target record, a target that is no longer unread, and a genuine newly matching keep rule return zero.
 
