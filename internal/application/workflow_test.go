@@ -48,6 +48,18 @@ func TestApplyQuietPrintsOnlyConciseSuccess(t *testing.T) {
 	}
 }
 
+func TestApplyQuietReportsNoUpdatesWhenAllTargetsAreSafelySkipped(t *testing.T) {
+	item := notification("1", "subscribed")
+	client := &fakeClient{getResults: map[string][]fakeGetResult{"1": {{found: false}}}}
+	var out strings.Builder
+	if err := ApplyQuiet(context.Background(), &out, testConfig(), client, []model.Decision{{Thread: item, Action: model.ActionUnsubscribeAndMarkDone, URL: "one"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "Done: no notification updates needed.\n"; got != want {
+		t.Fatalf("output=%q want=%q", got, want)
+	}
+}
+
 func TestApplyQuietSuppressesSafeSkipsAndKeepsFailuresActionable(t *testing.T) {
 	first, second := notification("1", "subscribed"), notification("2", "subscribed")
 	client := &fakeClient{

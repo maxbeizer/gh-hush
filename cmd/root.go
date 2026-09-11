@@ -176,25 +176,18 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 		_, _ = fmt.Fprintf(stderr, "generated preview report in %s\n", formatDuration(now().Sub(reportStart)))
 	}
 	targetCount := countHushActions(decisions)
-	if dryRun {
-		if quiet {
-			_, _ = fmt.Fprintf(stderr, "Would update %d %s.\n", targetCount, notificationWord(targetCount))
-		}
-		printTotalRuntime()
-		return nil
+	if quiet {
+		interactive := isTerminal(command.InOrStdin()) && isTerminal(command.ErrOrStderr())
+		return runQuiet(command, stderr, decisions, dryRun, confirm, interactive, func() error {
+			return application.ApplyQuiet(ctx, stderr, cfg, client, decisions)
+		})
 	}
-	if targetCount == 0 {
-		if quiet {
-			_, _ = fmt.Fprintln(stderr, "Done: no notification updates needed.")
-		}
+	if dryRun || targetCount == 0 {
 		printTotalRuntime()
 		return nil
 	}
 	if !confirm {
-		if !isTerminal(command.InOrStdin()) || !isTerminal(command.ErrOrStderr()) || (!quiet && !isTerminal(command.OutOrStdout())) {
-			if quiet {
-				return errors.New("confirmation requires an interactive terminal; rerun with --confirm")
-			}
+		if !isTerminal(command.InOrStdin()) || !isTerminal(command.OutOrStdout()) || !isTerminal(command.ErrOrStderr()) {
 			_, _ = fmt.Fprintln(stderr, "Preview only: input, preview output, and prompt output must all be interactive terminals. Re-run with --confirm to apply these changes.")
 			printTotalRuntime()
 			return nil
@@ -211,12 +204,51 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 			return nil
 		}
 	}
-	if quiet {
-		return application.ApplyQuiet(ctx, stderr, cfg, client, decisions)
-	}
 	err = application.Apply(ctx, stderr, cfg, client, decisions, isTerminal(stderr))
 	printTotalRuntime()
 	return err
+}
+
+func runQuiet(command *cobra.Command, stderr io.Writer, decisions []model.Decision, dryRun, confirm, interactive bool, apply func() error) error {
+	if err := quietClassificationError(decisions); err != nil {
+		return err
+	}
+	targetCount := countHushActions(decisions)
+	if dryRun {
+		_, _ = fmt.Fprintf(stderr, "Would update %d %s.\n", targetCount, notificationWord(targetCount))
+		return nil
+	}
+	if targetCount == 0 {
+		_, _ = fmt.Fprintln(stderr, "Done: no notification updates needed.")
+		return nil
+	}
+	if !confirm {
+		if !interactive {
+			return errors.New("confirmation requires an interactive terminal; rerun with --confirm")
+		}
+		approved, err := promptForConfirmation(command.InOrStdin(), stderr, targetCount)
+		if err != nil {
+			return fmt.Errorf("read confirmation: %w", err)
+		}
+		if !approved {
+			_, _ = fmt.Fprintln(stderr, "No changes made.")
+			return nil
+		}
+	}
+	return apply()
+}
+
+func quietClassificationError(decisions []model.Decision) error {
+	var details []string
+	for _, decision := range decisions {
+		if decision.EnrichmentError != "" {
+			details = append(details, fmt.Sprintf("notification %s: %s", decision.Thread.ID, decision.EnrichmentError))
+		}
+	}
+	if len(details) == 0 {
+		return nil
+	}
+	return fmt.Errorf("classification failed for %d %s: %s", len(details), notificationWord(len(details)), strings.Join(details, "; "))
 }
 
 func countHushActions(decisions []model.Decision) int {

@@ -62,6 +62,10 @@ func ApplyQuiet(ctx context.Context, output io.Writer, cfg config.Config, client
 		failed := total.Targets - total.DoneSucceeded - total.Missing - total.NoLongerUnread - total.Protected
 		return fmt.Errorf("%d of %d notification updates failed: %w", failed, total.Targets, err)
 	}
+	if total.DoneSucceeded == 0 {
+		_, writeErr := fmt.Fprintln(output, "Done: no notification updates needed.")
+		return writeErr
+	}
 	_, writeErr := fmt.Fprintf(output, "Done: %d %s updated.\n", total.DoneSucceeded, notificationWord(total.DoneSucceeded))
 	return writeErr
 }
