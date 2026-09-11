@@ -112,6 +112,11 @@ hush:
 	if err == nil || !strings.Contains(err.Error(), "migrate-config") {
 		t.Fatalf("error = %v, want migrate-config guidance", err)
 	}
+	// The AI-prompt summary line must also point at migration, not fall back to
+	// the generic "fix the errors" guidance.
+	if !strings.Contains(err.Error(), "uses an older schema. Run: gh hush migrate-config") {
+		t.Fatalf("error = %v, want AI-prompt migration guidance", err)
+	}
 }
 
 func TestPublishedSchemaEnforcesRuntimeConstraints(t *testing.T) {
