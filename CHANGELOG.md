@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ### Added
 
+- Add `--quiet` to suppress the preview and print only a concise result to stderr.
 - Add `gh hush migrate-config`, which mechanically rewrites a pre-v3 configuration as an equivalent version 3 policy. It previews by default and requires `--write` to rewrite the file in place, keeping a `.bak` backup.
 
 ### Fixed
@@ -23,7 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 - Reject recursive and overly deep rule conditions during decoding instead of crashing with a stack overflow.
 - Evaluate `all` with defensible indeterminate semantics: a conclusive non-match wins over an evidence-limited sibling regardless of predicate order.
 - Scope `mentions_team` to the notification repository's owner, matching the `review_requested_team` behavior.
-- Require rule condition values to be non-empty strings, restrict `state`/`state_not` to `open`/`closed`/`locked`, and require `search` to accompany exactly one mention predicate, keeping the JSON Schema and runtime parser in agreement.
+- Require rule condition values to be non-empty strings, restrict `state`/`state_not` to `open`, `closed`, `locked`, `merged`, `draft`, and `answered`, and require `search` to accompany exactly one mention predicate, keeping the JSON Schema and runtime parser in agreement.
 - Force owner-only (`0600`) permissions on the migrated configuration and its `.bak` backup, and reject unknown fields or multiple documents in the source configuration during migration.
 
 ## [0.3.0] - 2026-09-09

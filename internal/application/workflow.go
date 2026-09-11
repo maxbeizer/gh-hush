@@ -49,6 +49,28 @@ type result struct {
 // scheduling, ordered reporting, progress, and the unsubscribe-before-Done
 // safety invariant. interactive controls whether progress is rendered in place.
 func Apply(ctx context.Context, output io.Writer, cfg config.Config, client Client, decisions []model.Decision, interactive bool) error {
+	_, err := runApply(ctx, output, cfg, client, decisions, interactive, false)
+	return err
+}
+
+// ApplyQuiet applies eligible decisions without progress or per-notification
+// output and writes exactly one concise success result. Failures retain their
+// underlying details so callers can present an actionable error.
+func ApplyQuiet(ctx context.Context, output io.Writer, cfg config.Config, client Client, decisions []model.Decision) error {
+	total, err := runApply(ctx, io.Discard, cfg, client, decisions, false, true)
+	if err != nil {
+		failed := total.Targets - total.DoneSucceeded - total.Missing - total.NoLongerUnread - total.Protected
+		return fmt.Errorf("%d of %d notification updates failed: %w", failed, total.Targets, err)
+	}
+	if total.DoneSucceeded == 0 {
+		_, writeErr := fmt.Fprintln(output, "Done: no notification updates needed.")
+		return writeErr
+	}
+	_, writeErr := fmt.Fprintf(output, "Done: %d %s updated.\n", total.DoneSucceeded, notificationWord(total.DoneSucceeded))
+	return writeErr
+}
+
+func runApply(ctx context.Context, output io.Writer, cfg config.Config, client Client, decisions []model.Decision, interactive, quiet bool) (summary, error) {
 	ctx = diagnostic.WithPhase(ctx, "apply")
 	applyStart := now()
 	if diagnostic.Enabled(ctx) {
@@ -144,11 +166,13 @@ func Apply(ctx context.Context, output io.Writer, cfg config.Config, client Clie
 	if err := ctx.Err(); err != nil && next < len(targets) {
 		failures = append(failures, err)
 	}
-	writeSummary(output, total, now().Sub(applyStart))
-	if len(failures) > 0 {
-		return fmt.Errorf("one or more notification updates did not complete safely: %w", errors.Join(failures...))
+	if !quiet {
+		writeSummary(output, total, now().Sub(applyStart))
 	}
-	return nil
+	if len(failures) > 0 {
+		return total, fmt.Errorf("one or more notification updates did not complete safely: %w", errors.Join(failures...))
+	}
+	return total, nil
 }
 
 func applyOne(ctx context.Context, evaluator *policy.Evaluator, client Client, preview model.Decision) result {
