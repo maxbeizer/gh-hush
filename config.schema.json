@@ -2,96 +2,150 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/maxbeizer/gh-hush/blob/main/config.schema.json",
   "title": "gh-hush configuration",
-  "description": "Policy used by gh-hush to decide which GitHub notifications to keep and hush.",
+  "description": "Version 3 policy used by gh-hush to decide which GitHub notifications to keep and hush, expressed as identity, defaults, and an ordered list of data-described rules.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["user", "github_organization", "team_slugs", "keep", "hush"],
+  "required": ["version", "identity", "defaults", "rules"],
   "properties": {
-    "user": {
-      "type": "string",
-      "description": "GitHub login that must match the account authenticated by gh.",
-      "maxLength": 39,
-      "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+    "version": {
+      "type": "integer",
+      "const": 3,
+      "description": "Configuration schema version. Must be 3; run gh hush migrate-config to upgrade an older file."
     },
-    "github_organization": {
-      "type": "string",
-      "description": "Primary GitHub organization. Notifications outside it are protected when external_organization_issues is enabled.",
-      "maxLength": 39,
-      "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
-    },
-    "team_slugs": {
-      "type": "array",
-      "description": "Teams used by team review and Discussion mention rules, in org/team-slug form. Each org must match github_organization; matching and uniqueness are case-insensitive.",
-      "uniqueItems": true,
-      "items": {
-        "type": "string",
-        "allOf": [
-          {"pattern": "^[A-Za-z0-9-]{1,39}/"},
-          {"pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9_.-]+$"}
-        ]
-      }
-    },
-    "keep": {
+    "identity": {
       "type": "object",
-      "description": "Explicit protection rules. Every switch is required and may be disabled with false.",
       "additionalProperties": false,
-      "required": [
-        "external_organization_issues",
-        "personally_mentioned",
-        "personally_assigned",
-        "individually_review_requested",
-        "active_team_review_requested_pull_requests",
-        "authored_by_user",
-        "team_mentioned_discussions"
-      ],
+      "required": ["user", "organization", "teams"],
+      "description": "The acting user, their primary organization, and their teams. Predicates resolve me and my_teams against these.",
       "properties": {
-        "external_organization_issues": {"type": "boolean", "description": "Keep notifications for all subject types in repositories outside github_organization."},
-        "personally_mentioned": {"type": "boolean", "description": "Keep notifications caused by a personal mention."},
-        "personally_assigned": {"type": "boolean", "description": "Keep Issues and pull requests currently assigned to user."},
-        "individually_review_requested": {"type": "boolean", "description": "Keep pull requests with a current review request for user."},
-        "active_team_review_requested_pull_requests": {"type": "boolean", "description": "Keep open pull requests with a current review request for a configured team."},
-        "authored_by_user": {"type": "boolean", "description": "Keep work authored by user."},
-        "team_mentioned_discussions": {"type": "boolean", "description": "Keep Discussions whose body or comment history mentions a configured team."}
-      }
-    },
-    "watched_repositories": {
-      "type": "object",
-      "description": "Repositories whose notifications receive additional protection, keyed by owner/repo. Omitted capabilities are disabled and each entry must enable at least one.",
-      "additionalProperties": false,
-      "propertyNames": {
-        "allOf": [
-          {"pattern": "^[^/]{1,39}/"},
-          {"pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9_.-]{1,100}$"}
-        ]
-      },
-      "patternProperties": {
-        "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9_.-]{1,100}$": {
-          "type": "object",
-          "description": "Capabilities protecting notifications in one watched repository.",
-          "additionalProperties": false,
-          "anyOf": [
-            {"required": ["all_notifications"], "properties": {"all_notifications": {"const": true}}},
-            {"required": ["open_pull_requests"], "properties": {"open_pull_requests": {"const": true}}},
-            {"required": ["open_issues"], "properties": {"open_issues": {"const": true}}},
-            {"required": ["open_discussions"], "properties": {"open_discussions": {"const": true}}}
-          ],
-          "properties": {
-            "all_notifications": {"type": "boolean", "description": "Keep every notification in this repository regardless of subject type or state."},
-            "open_pull_requests": {"type": "boolean", "description": "Keep notifications whose subject is an open pull request, including drafts."},
-            "open_issues": {"type": "boolean", "description": "Keep notifications whose subject is an open Issue."},
-            "open_discussions": {"type": "boolean", "description": "Keep notifications whose subject is a Discussion that is not closed."}
+        "user": {
+          "type": "string",
+          "description": "GitHub login that must match the account authenticated by gh.",
+          "maxLength": 39,
+          "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+        },
+        "organization": {
+          "type": "string",
+          "description": "Primary GitHub organization login.",
+          "maxLength": 39,
+          "pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$"
+        },
+        "teams": {
+          "type": "array",
+          "description": "Teams referenced by my_teams, in org/team-slug form. Each org must match identity.organization; matching and uniqueness are case-insensitive.",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "allOf": [
+              {"pattern": "^[A-Za-z0-9-]{1,39}/"},
+              {"pattern": "^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*/[A-Za-z0-9_.-]+$"}
+            ]
           }
         }
       }
     },
-    "hush": {
+    "defaults": {
       "type": "object",
-      "description": "Catch-all action applied after keep rules.",
       "additionalProperties": false,
-      "required": ["all_other_notifications"],
+      "required": ["action", "on_missing_evidence"],
+      "description": "Terminal fallback action and the global safety posture for unavailable evidence.",
       "properties": {
-        "all_other_notifications": {"type": "boolean", "const": true, "description": "Unsubscribe from and mark Done all eligible notifications not protected by a keep rule. Must be true."}
+        "action": {
+          "type": "string",
+          "enum": ["keep", "hush"],
+          "description": "Terminal action applied when no rule matches."
+        },
+        "on_missing_evidence": {
+          "type": "string",
+          "enum": ["keep", "hush"],
+          "description": "Action taken when a rule needs GitHub evidence that could not be fetched."
+        }
       }
+    },
+    "rules": {
+      "type": "array",
+      "description": "Ordered match/action rules. The first rule whose condition matches wins.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "action"],
+        "description": "One rule. name is the report identity, action is keep or hush, and when is the condition. An omitted when matches every notification.",
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "description": "Human-readable rule identity used in preview and explain output."},
+          "action": {"type": "string", "enum": ["keep", "hush"], "description": "Action applied when this rule matches first."},
+          "when": {"$ref": "#/$defs/predicate"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "predicate": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "description": "A composable condition. Sibling keys form an implicit all. any, all, and not compose child conditions; the remaining keys are leaf predicates.",
+      "dependentSchemas": {
+        "search": {
+          "anyOf": [
+            {"required": ["mentions_user"]},
+            {"required": ["mentions_team"]}
+          ]
+        }
+      },
+      "properties": {
+        "any": {"type": "array", "items": {"$ref": "#/$defs/predicate"}, "minItems": 1, "description": "Matches when any child condition matches."},
+        "all": {"type": "array", "items": {"$ref": "#/$defs/predicate"}, "minItems": 1, "description": "Matches when every child condition matches."},
+        "not": {"$ref": "#/$defs/predicate", "description": "Matches when the child condition does not match."},
+        "repository": {"$ref": "#/$defs/repository", "description": "Matches on repository owner and name."},
+        "subject_type": {"$ref": "#/$defs/stringOrList", "description": "Matches the notification subject type, e.g. PullRequest, Issue, Discussion."},
+        "state": {"type": "string", "enum": ["open", "closed", "locked", "merged", "draft", "answered"], "description": "Matches subject state: open, closed, locked, merged, draft, or answered."},
+        "state_not": {"type": "string", "enum": ["open", "closed", "locked", "merged", "draft", "answered"], "description": "Matches when the subject state differs from the given state."},
+        "reason": {"$ref": "#/$defs/stringOrList", "description": "Matches GitHub's notification reason, e.g. mention, assign, author."},
+        "author": {"type": "string", "minLength": 1, "description": "Matches the subject author; me resolves to identity.user."},
+        "assignee": {"type": "string", "minLength": 1, "description": "Matches a current assignee; me resolves to identity.user."},
+        "review_requested": {"type": "string", "minLength": 1, "description": "Matches a current individual review request; me resolves to identity.user."},
+        "review_requested_team": {"type": "string", "minLength": 1, "description": "Matches a current team review request; my_teams resolves to identity.teams."},
+        "mentions_user": {"type": "string", "minLength": 1, "description": "Matches an @-mention of a user; me resolves to identity.user."},
+        "mentions_team": {"type": "string", "minLength": 1, "description": "Matches an @-mention of a team; my_teams resolves to identity.teams."},
+        "search": {"$ref": "#/$defs/searchScope", "description": "Scope for mentions predicates: body and/or comments."},
+        "age": {"$ref": "#/$defs/age", "description": "Matches on the notification update age."}
+      }
+    },
+    "repository": {
+      "oneOf": [
+        {"$ref": "#/$defs/stringOrList"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "owner": {"type": "string", "minLength": 1, "description": "Repository owner must equal this login."},
+            "owner_not": {"type": "string", "minLength": 1, "description": "Repository owner must not equal this login."},
+            "any_of": {"$ref": "#/$defs/stringOrList", "description": "Repository full name or glob, e.g. github/dependency-*."}
+          }
+        }
+      ]
+    },
+    "age": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "older_than": {"type": "string", "minLength": 1, "description": "e.g. 30d, 12h."},
+        "newer_than": {"type": "string", "minLength": 1, "description": "e.g. 7d, 24h."}
+      }
+    },
+    "searchScope": {
+      "oneOf": [
+        {"type": "string", "enum": ["body", "comments"]},
+        {"type": "array", "items": {"type": "string", "enum": ["body", "comments"]}, "minItems": 1}
+      ]
+    },
+    "stringOrList": {
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
+      ]
     }
   }
 }

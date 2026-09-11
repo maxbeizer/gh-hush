@@ -8,20 +8,36 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
+	"github.com/maxbeizer/gh-hush/internal/predicate"
 	"gopkg.in/yaml.v3"
 )
 
 var (
-	loginPattern        = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
-	teamSlugPattern     = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
-	repositoryPattern   = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
-	unknownFieldPattern = regexp.MustCompile(`^line ([0-9]+): field ([^ ]+) not found in type .+$`)
+	loginPattern    = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}$`)
+	teamSlugPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 )
 
-const configSchemaURL = "https://github.com/maxbeizer/gh-hush/blob/main/config.schema.json"
+const (
+	configSchemaURL = "https://github.com/maxbeizer/gh-hush/blob/main/config.schema.json"
+
+	// Version is the only configuration schema version this release accepts.
+	Version = 3
+)
+
+// Actions are the two terminal outcomes a rule or the default may select.
+const (
+	ActionKeep = "keep"
+	ActionHush = "hush"
+)
+
+// Missing-evidence postures decide what happens when a rule needs GitHub
+// evidence that could not be fetched.
+const (
+	OnMissingKeep = "keep"
+	OnMissingHush = "hush"
+)
 
 func DefaultPath() (string, error) {
 	if configHome := os.Getenv("XDG_CONFIG_HOME"); configHome != "" {
@@ -37,90 +53,42 @@ func DefaultPath() (string, error) {
 	return filepath.Join(home, ".config", "gh-hush", "config.yml"), nil
 }
 
-// Config is the complete notification policy. Unknown YAML fields are rejected.
+// Config is the complete v3 notification policy: identity, a global safety
+// posture and terminal fallback, and an ordered list of match/action rules
+// evaluated first-match-wins. Unknown YAML fields are rejected.
 type Config struct {
-	User                string                       `yaml:"user"`
-	GitHubOrganization  string                       `yaml:"github_organization"`
-	TeamSlugs           []string                     `yaml:"team_slugs"`
-	Keep                Keep                         `yaml:"keep"`
-	WatchedRepositories map[string]WatchedRepository `yaml:"watched_repositories"`
-	Hush                struct {
-		AllOtherNotifications *bool `yaml:"all_other_notifications"`
-	} `yaml:"hush"`
+	Version  int      `yaml:"version"`
+	Identity Identity `yaml:"identity"`
+	Defaults Defaults `yaml:"defaults"`
+	Rules    []Rule   `yaml:"rules"`
 }
 
-// WatchedRepository protects notifications in one repository in addition to,
-// and never instead of, the keep rules. Omitted capabilities are disabled.
-type WatchedRepository struct {
-	AllNotifications *bool `yaml:"all_notifications"`
-	OpenPullRequests *bool `yaml:"open_pull_requests"`
-	OpenIssues       *bool `yaml:"open_issues"`
-	OpenDiscussions  *bool `yaml:"open_discussions"`
+// Identity is the acting user, their primary organization, and their teams.
+type Identity struct {
+	User         string   `yaml:"user"`
+	Organization string   `yaml:"organization"`
+	Teams        []string `yaml:"teams"`
 }
 
-// WatchedRepository returns the configured rule for an owner/repo full name.
-// GitHub treats repository names case-insensitively, so lookup does too.
-func (c Config) WatchedRepository(fullName string) (WatchedRepository, bool) {
-	for name, watched := range c.WatchedRepositories {
-		if strings.EqualFold(name, fullName) {
-			return watched, true
-		}
-	}
-	return WatchedRepository{}, false
+// Defaults hold the terminal fallback action and the global safety posture
+// applied when a rule's required evidence is unavailable.
+type Defaults struct {
+	Action            string `yaml:"action"`
+	OnMissingEvidence string `yaml:"on_missing_evidence"`
 }
 
-type Keep struct {
-	ExternalOrganizationIssues            *bool `yaml:"external_organization_issues"`
-	PersonallyMentioned                   *bool `yaml:"personally_mentioned"`
-	PersonallyAssigned                    *bool `yaml:"personally_assigned"`
-	IndividuallyReviewRequested           *bool `yaml:"individually_review_requested"`
-	ActiveTeamReviewRequestedPullRequests *bool `yaml:"active_team_review_requested_pull_requests"`
-	AuthoredByUser                        *bool `yaml:"authored_by_user"`
-	TeamMentionedDiscussions              *bool `yaml:"team_mentioned_discussions"`
+// Rule is one user-authored match/action entry. name is the report identity,
+// action is keep or hush, and when is the predicate tree. An omitted when
+// matches every notification, which makes the rule an unconditional catch-all.
+type Rule struct {
+	Name   string         `yaml:"name"`
+	Action string         `yaml:"action"`
+	When   predicate.Node `yaml:"when"`
 }
 
-// Initialize writes a conservative starter policy to a new path. It never
-// replaces an existing file; callers must explicitly supply identity values.
-func Initialize(path, user, organization string, teamSlugs []string) error {
-	on := true
-	cfg := Config{
-		User:               user,
-		GitHubOrganization: organization,
-		TeamSlugs:          teamSlugs,
-		Keep: Keep{
-			ExternalOrganizationIssues:            &on,
-			PersonallyMentioned:                   &on,
-			PersonallyAssigned:                    &on,
-			IndividuallyReviewRequested:           &on,
-			ActiveTeamReviewRequestedPullRequests: &on,
-			AuthoredByUser:                        &on,
-			TeamMentionedDiscussions:              &on,
-		},
-	}
-	cfg.Hush.AllOtherNotifications = &on
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("create config: %w", err)
-	}
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return fmt.Errorf("encode config: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return fmt.Errorf("create config directory: %w", err)
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return fmt.Errorf("create config %q: %w", path, err)
-	}
-	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return fmt.Errorf("write config %q: %w", path, err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close config %q: %w", path, err)
-	}
-	return nil
+// PredicateIdentity projects the configured identity into the predicate layer.
+func (c Config) PredicateIdentity() predicate.Identity {
+	return predicate.Identity{User: c.Identity.User, Organization: c.Identity.Organization, Teams: c.Identity.Teams}
 }
 
 func Load(path string) (Config, []byte, error) {
@@ -157,88 +125,77 @@ func Parse(data []byte) (Config, error) {
 
 func (c Config) Validate() error {
 	var validationErrors []error
-	if !validGitHubLogin(c.User) {
-		validationErrors = append(validationErrors, errors.New("user must be a valid GitHub login"))
+	if c.Version != Version {
+		validationErrors = append(validationErrors, fmt.Errorf("version must be %d; run gh hush migrate-config to upgrade an older file", Version))
 	}
-	if !validGitHubLogin(c.GitHubOrganization) {
-		validationErrors = append(validationErrors, errors.New("github_organization must be a valid GitHub organization login"))
+	if !validGitHubLogin(c.Identity.User) {
+		validationErrors = append(validationErrors, errors.New("identity.user must be a valid GitHub login"))
 	}
-	required := []struct {
-		name  string
-		value *bool
-	}{
-		{"keep.external_organization_issues", c.Keep.ExternalOrganizationIssues},
-		{"keep.personally_mentioned", c.Keep.PersonallyMentioned},
-		{"keep.personally_assigned", c.Keep.PersonallyAssigned},
-		{"keep.individually_review_requested", c.Keep.IndividuallyReviewRequested},
-		{"keep.active_team_review_requested_pull_requests", c.Keep.ActiveTeamReviewRequestedPullRequests},
-		{"keep.authored_by_user", c.Keep.AuthoredByUser},
-		{"keep.team_mentioned_discussions", c.Keep.TeamMentionedDiscussions},
-		{"hush.all_other_notifications", c.Hush.AllOtherNotifications},
+	if !validGitHubLogin(c.Identity.Organization) {
+		validationErrors = append(validationErrors, errors.New("identity.organization must be a valid GitHub organization login"))
 	}
-	for _, field := range required {
-		if field.value == nil {
-			validationErrors = append(validationErrors, fmt.Errorf("%s is required", field.name))
-		}
+	validationErrors = append(validationErrors, c.validateTeams()...)
+
+	switch c.Defaults.Action {
+	case ActionKeep, ActionHush:
+	case "":
+		validationErrors = append(validationErrors, errors.New("defaults.action is required and must be keep or hush"))
+	default:
+		validationErrors = append(validationErrors, fmt.Errorf("defaults.action %q must be keep or hush", c.Defaults.Action))
 	}
-	if c.Hush.AllOtherNotifications != nil && !*c.Hush.AllOtherNotifications {
-		validationErrors = append(validationErrors, errors.New("hush.all_other_notifications must be true"))
+	switch c.Defaults.OnMissingEvidence {
+	case OnMissingKeep, OnMissingHush:
+	case "":
+		validationErrors = append(validationErrors, errors.New("defaults.on_missing_evidence is required and must be keep or hush"))
+	default:
+		validationErrors = append(validationErrors, fmt.Errorf("defaults.on_missing_evidence %q must be keep or hush", c.Defaults.OnMissingEvidence))
 	}
 
-	seenTeams := make(map[string]struct{}, len(c.TeamSlugs))
-	for _, team := range c.TeamSlugs {
-		parts := strings.Split(team, "/")
-		if len(parts) != 2 || !validGitHubLogin(parts[0]) || !teamSlugPattern.MatchString(parts[1]) {
-			validationErrors = append(validationErrors, fmt.Errorf("team_slugs entry %q must use org/team-slug form", team))
-			continue
+	seenNames := make(map[string]struct{}, len(c.Rules))
+	for i, rule := range c.Rules {
+		if strings.TrimSpace(rule.Name) == "" {
+			validationErrors = append(validationErrors, fmt.Errorf("rules[%d].name is required", i))
+		} else if _, exists := seenNames[strings.ToLower(rule.Name)]; exists {
+			validationErrors = append(validationErrors, fmt.Errorf("rules contains duplicate name %q", rule.Name))
+		} else {
+			seenNames[strings.ToLower(rule.Name)] = struct{}{}
 		}
-		if !strings.EqualFold(parts[0], c.GitHubOrganization) {
-			validationErrors = append(validationErrors, fmt.Errorf("team_slugs entry %q must belong to github_organization %q", team, c.GitHubOrganization))
+		switch rule.Action {
+		case ActionKeep, ActionHush:
+		case "":
+			validationErrors = append(validationErrors, fmt.Errorf("rules[%d] (%q) action is required and must be keep or hush", i, rule.Name))
+		default:
+			validationErrors = append(validationErrors, fmt.Errorf("rules[%d] (%q) action %q must be keep or hush", i, rule.Name, rule.Action))
 		}
-		key := strings.ToLower(team)
-		if _, exists := seenTeams[key]; exists {
-			validationErrors = append(validationErrors, fmt.Errorf("team_slugs contains duplicate %q", team))
-		}
-		seenTeams[key] = struct{}{}
 	}
-
-	validationErrors = append(validationErrors, c.validateWatchedRepositories()...)
 	return errors.Join(validationErrors...)
 }
 
-func (c Config) validateWatchedRepositories() []error {
+func (c Config) validateTeams() []error {
 	var validationErrors []error
-	names := make([]string, 0, len(c.WatchedRepositories))
-	for name := range c.WatchedRepositories {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	seen := make(map[string]string, len(names))
-	for _, name := range names {
-		parts := strings.Split(name, "/")
-		if len(parts) != 2 || !validGitHubLogin(parts[0]) || !repositoryPattern.MatchString(parts[1]) {
-			validationErrors = append(validationErrors, fmt.Errorf("watched_repositories key %q must use owner/repo form", name))
+	seenTeams := make(map[string]struct{}, len(c.Identity.Teams))
+	for _, team := range c.Identity.Teams {
+		parts := strings.Split(team, "/")
+		if len(parts) != 2 || !validGitHubLogin(parts[0]) || !teamSlugPattern.MatchString(parts[1]) {
+			validationErrors = append(validationErrors, fmt.Errorf("identity.teams entry %q must use org/team-slug form", team))
 			continue
 		}
-		key := strings.ToLower(name)
-		if previous, exists := seen[key]; exists {
-			validationErrors = append(validationErrors, fmt.Errorf("watched_repositories contains duplicate %q and %q", previous, name))
+		if !strings.EqualFold(parts[0], c.Identity.Organization) {
+			validationErrors = append(validationErrors, fmt.Errorf("identity.teams entry %q must belong to identity.organization %q", team, c.Identity.Organization))
 		}
-		seen[key] = name
-
-		watched := c.WatchedRepositories[name]
-		if !Enabled(watched.AllNotifications) && !Enabled(watched.OpenPullRequests) &&
-			!Enabled(watched.OpenIssues) && !Enabled(watched.OpenDiscussions) {
-			validationErrors = append(validationErrors, fmt.Errorf("watched_repositories entry %q must enable at least one capability", name))
+		key := strings.ToLower(team)
+		if _, exists := seenTeams[key]; exists {
+			validationErrors = append(validationErrors, fmt.Errorf("identity.teams contains duplicate %q", team))
 		}
+		seenTeams[key] = struct{}{}
 	}
 	return validationErrors
 }
 
 func configFixPrompt(path string, err error) string {
-	if strings.Contains(err.Error(), `"discussion_team_slugs" was renamed to "team_slugs"`) {
-		return fmt.Sprintf("In %q, rename discussion_team_slugs to team_slugs and add keep.active_team_review_requested_pull_requests as true or false.", path)
+	message := err.Error()
+	if strings.Contains(message, "version must be") || strings.Contains(message, "keep:") || strings.Contains(message, "discussion_team_slugs") {
+		return fmt.Sprintf("The configuration at %q uses an older schema. Run: gh hush migrate-config --config %q to rewrite it as version %d.", path, path, Version)
 	}
 	return fmt.Sprintf("Fix the configuration errors above in %q, preserving the policy's intent.", path)
 }
@@ -248,22 +205,18 @@ func configDecodeError(err error) error {
 	if !errors.As(err, &typeErr) {
 		return fmt.Errorf("decode YAML: %w", err)
 	}
-
+	unknownField := regexp.MustCompile(`^line ([0-9]+): field ([^ ]+) not found in type .+$`)
 	problems := make([]string, 0, len(typeErr.Errors))
 	for _, problem := range typeErr.Errors {
-		match := unknownFieldPattern.FindStringSubmatch(problem)
+		match := unknownField.FindStringSubmatch(problem)
 		if match == nil {
 			problems = append(problems, problem)
 			continue
 		}
 		line, field := match[1], match[2]
 		switch field {
-		case "discussion_team_slugs":
-			problems = append(problems, fmt.Sprintf(`line %s: "discussion_team_slugs" was renamed to "team_slugs" in v0.2.0; also add "active_team_review_requested_pull_requests: true" (or false) under "keep"`, line))
-		case "unsubscribe":
-			problems = append(problems, fmt.Sprintf(`line %s: "unsubscribe" was replaced by "hush"`, line))
-		case "run_mode", "output":
-			problems = append(problems, fmt.Sprintf(`line %s: %q is no longer supported and must be removed`, line, field))
+		case "user", "keep", "hush", "watched_repositories", "team_slugs", "github_organization":
+			problems = append(problems, fmt.Sprintf(`line %s: %q belongs to an older schema; run gh hush migrate-config to upgrade to version %d`, line, field, Version))
 		default:
 			problems = append(problems, fmt.Sprintf(`line %s: unknown configuration field %q; see %s`, line, field, configSchemaURL))
 		}
@@ -274,5 +227,3 @@ func configDecodeError(err error) error {
 func validGitHubLogin(login string) bool {
 	return loginPattern.MatchString(login) && !strings.HasSuffix(login, "-") && !strings.Contains(login, "--")
 }
-
-func Enabled(value *bool) bool { return value != nil && *value }

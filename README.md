@@ -80,19 +80,19 @@ Marking Done removes the current notification from the inbox; it is not the same
 
 The default path is `$XDG_CONFIG_HOME/gh-hush/config.yml`, or `~/.config/gh-hush/config.yml` when `XDG_CONFIG_HOME` is unset. Override it with `--config PATH`.
 
-### Upgrading from v0.2.x
+### Upgrading from v0.3.x
 
-No configuration migration is required. Existing valid v0.2.x configurations remain valid in v0.3.x because `watched_repositories` is optional and defaults to no watched repositories.
-
-Upgrade the extension, validate the existing configuration, and preview the resulting decisions before applying anything:
+v0.4.0 replaces the flat `keep` booleans with `version: 3`: an explicit identity, a terminal default, and an ordered list of rules evaluated first-match-wins. Older files are rejected with guidance, so migrate before the next run:
 
 ```bash
 gh extension upgrade gh-hush
+gh hush migrate-config            # print the equivalent version 3 policy
+gh hush migrate-config --write    # rewrite in place, keeping a .bak backup
 gh hush validate-config
 gh hush --dry-run
 ```
 
-If you use a non-default configuration path, pass `--config PATH` to the validation and preview commands. `init-config` is intended for new installations and refuses to overwrite an existing file. To opt into watched-repository protection after upgrading, add the desired entries under [`watched_repositories`](#watched-repositories).
+Migration is mechanical: each enabled keep switch and each `watched_repositories` entry becomes an explicit rule with the same protection, in the same precedence order. Review the result: rules are now yours to reorder, rename, narrow, and extend. If you use a non-default configuration path, pass `--config PATH` to every command above.
 
 On the first run, create a valid conservative starter configuration with your explicit identity values:
 
@@ -102,7 +102,7 @@ gh hush init-config --user YOUR-GITHUB-LOGIN --github-organization YOUR-PRIMARY-
   --team YOUR-PRIMARY-ORGANIZATION/YOUR-TEAM
 ```
 
-`--team` is optional and repeatable. Initialization enables every documented keep rule, including the external-organization protection, and the catch-all hush action. It does not contact GitHub or infer your user, organization, or teams. It creates parent directories and a user-readable-only file, refuses to overwrite any existing path, prints the created path, and tells you to review and validate the policy. Use `--config PATH` with `init-config` to create a non-default file. A normal run with no default config exits with the exact path and initialization command instead of showing generic help.
+`--team` is optional and repeatable. Initialization writes a commented rule set reproducing the protections gh-hush shipped before v3, plus the `hush` default. It does not contact GitHub or infer your user, organization, or teams. It creates parent directories and a user-readable-only file, refuses to overwrite any existing path, prints the created path, and tells you to review and validate the policy. Use `--config PATH` with `init-config` to create a non-default file. A normal run with no default config exits with the exact path and initialization command instead of showing generic help.
 
 Every normal run validates the complete configuration before contacting GitHub and exits with a descriptive error if it is invalid. To check it independently, run:
 
@@ -111,65 +111,89 @@ gh hush validate-config
 gh hush validate-config --config PATH
 ```
 
-The machine-readable [JSON Schema](config.schema.json) documents every field and can be configured in editors that support YAML schemas. A synchronization test fails when the Go configuration type and the published schema differ, so contributors must update both together.
+The machine-readable [JSON Schema](config.schema.json) documents every field, including the recursive condition type, and can be configured in editors that support YAML schemas. A test validates the shipped starter policy and representative invalid documents against both the schema and the runtime parser, so contributors must update both together.
 
 ```yaml
-user: YOUR-GITHUB-LOGIN
-github_organization: YOUR-PRIMARY-ORGANIZATION
+version: 3
 
-team_slugs:
-  - YOUR-PRIMARY-ORGANIZATION/YOUR-TEAM
+identity:
+  user: YOUR-GITHUB-LOGIN
+  organization: YOUR-PRIMARY-ORGANIZATION
+  teams:
+    - YOUR-PRIMARY-ORGANIZATION/YOUR-TEAM
 
-keep:
-  external_organization_issues: true
-  personally_mentioned: true
-  personally_assigned: true
-  individually_review_requested: true
-  active_team_review_requested_pull_requests: true
-  authored_by_user: true
-  team_mentioned_discussions: true
+defaults:
+  action: hush              # terminal fallback when no rule matches
+  on_missing_evidence: keep # safety posture when GitHub evidence is unavailable
 
-watched_repositories:
-  YOUR-ORGANIZATION/YOUR-WATCHED-REPOSITORY:
-    open_pull_requests: true
-    open_issues: true
-  ANY-OWNER/ANOTHER-REPOSITORY:
-    all_notifications: true
+rules:
+  - name: keep work outside my organization
+    action: keep
+    when:
+      repository:
+        owner_not: YOUR-PRIMARY-ORGANIZATION
 
-hush:
-  all_other_notifications: true
+  - name: keep work directed at me
+    action: keep
+    when:
+      any:
+        - reason: [mention, assign, author]
+        - assignee: me
+        - review_requested: me
+
+  - name: keep my team's active reviews
+    action: keep
+    when:
+      all:
+        - subject_type: [PullRequest]
+        - state: open
+        - review_requested_team: my_teams
+
+  - name: watch a repository I follow
+    action: keep
+    when:
+      all:
+        - repository:
+            any_of: [YOUR-ORGANIZATION/YOUR-WATCHED-REPOSITORY, YOUR-ORGANIZATION/dependency-*]
+        - any:
+            - all: [{subject_type: [PullRequest]}, {state: open}]
+            - all: [{subject_type: [Issue]}, {state: open}]
+            - all: [{subject_type: [Discussion]}, {state_not: closed}]
+
+  - name: hush stale subscriptions
+    action: hush
+    when:
+      all:
+        - reason: [subscribed]
+        - age:
+            older_than: 30d
 ```
 
-This schema is intentionally incompatible with earlier versions: `run_mode`, `unsubscribe`, and the entire `output` section are unknown fields and are rejected. Every keep boolean is required (and may be `false`); `hush.all_other_notifications` is required and must be `true`. Complete previews are unconditional. The configured user must match the authenticated account.
+Evaluation happens in four layers, and precedence is visible in the file:
 
-Keep rules protect:
+1. **Identity.** `identity` resolves `me` and `my_teams`. The configured user must match the authenticated account.
+2. **Safety.** Only `Issue`, `PullRequest`, `Discussion`, `Commit`, `Release`, and `CheckSuite` are eligible for hushing. Unsupported, unknown, sensitive, administrative, and security-related subject types are safety-kept before any rule runs, and no rule can defeat that.
+3. **Rules.** The ordered list is evaluated top to bottom and the first match wins, the same precedence model as firewalls, `.gitignore`, and routing tables. The matching rule's `name` is the evidence shown in the preview, so reports explain decisions in your own words.
+4. **Default.** `defaults.action` is the terminal fallback when no rule matches.
 
-1. notifications from repositories outside `github_organization`, for every subject type;
-2. `reason: mention`;
-3. `reason: assign` or a current personal assignment;
-4. a current individual pull-request review request;
-5. an open pull request with a current review request for a configured team;
-6. work authored by `user`; and
-7. Discussions containing an exact configured team mention in the body or anywhere in the complete paginated comment history.
+When a rule needs GitHub evidence that cannot be fetched, `defaults.on_missing_evidence: keep` conservatively keeps the notification and reports the failure; `hush` treats the indeterminate rule as a non-match, continues, and still reports the failure. Evidence is fetched lazily and at most once per notification, and only for the predicates actually evaluated, so a rule that classifies from the notification alone costs no extra requests.
 
-### Watched repositories
+### Condition vocabulary
 
-`watched_repositories` is optional and adds protection for repositories you want to follow even when nothing is directed at you. Each key is an `owner/repo` name matched case-insensitively, and may belong to any owner. Capabilities are opt-in: an omitted capability is disabled, and every entry must enable at least one.
+A condition is data, not an expression language. Sibling keys of a mapping form an implicit `all`, and conditions compose with `any`, `all`, and `not`. An omitted `when` matches every notification, which makes the rule an unconditional catch-all.
 
-| Capability | Protects |
+| Predicate | Matches on |
 | --- | --- |
-| `all_notifications` | Every notification in the repository, regardless of subject type or state. No subject request is required. |
-| `open_pull_requests` | Notifications whose subject is an open pull request, including drafts. Merged and closed pull requests are not protected. |
-| `open_issues` | Notifications whose subject is an open Issue. |
-| `open_discussions` | Notifications whose subject is a Discussion that is not closed. Answered and locked Discussions are still protected. |
+| `repository` | `owner`, `owner_not`, or `any_of` with `owner/repo` names and globs such as `github/dependency-*`. A bare value or list is shorthand for `any_of`. Matching is case-insensitive. |
+| `subject_type` | `PullRequest`, `Issue`, `Discussion`, `Commit`, `Release`, `CheckSuite`. |
+| `state` / `state_not` | `open`, `closed`, `locked`, `merged`, `draft`, `answered`. A locked Discussion counts as open until it has been closed. `merged` and `draft` apply to pull requests; `answered` applies to Discussions. |
+| `reason` | GitHub's notification `reason`, for example `mention`, `assign`, `author`, `review_requested`. |
+| `author`, `assignee`, `review_requested` | A login or `me`. `assignee` and `review_requested` apply only to Issues and pull requests. |
+| `review_requested_team` | A team slug or `my_teams`. Team slugs match only within the notification's own owner. |
+| `mentions_user`, `mentions_team` | Exact `@`-mentions, with an optional `search` scope of `body` and/or `comments`; both are searched by default. `mentions_team` slugs match only within the notification's own owner. Comment search covers the complete paginated history. |
+| `age` | `older_than: 30d`, `newer_than: 7d`, in Go durations plus a `d` day suffix. Thresholds are exclusive: a notification exactly `30d` old does not match `older_than: 30d`. |
 
-Watched repositories are strictly additive: a match keeps the notification, and a non-match falls through to the keep rules above unchanged. When a capability needs the subject's state and that state is unavailable or unrecognized, the notification is conservatively safety-kept.
-
-Closed and merged pull requests do not match the team-review keep rule and proceed through normal policy evaluation. Required evidence failures, including an unavailable or unrecognized pull-request state, conservatively safety-keep a notification. Discussion team mentions found in historical comments continue to protect the Discussion until it is manually resolved.
-
-Only `Issue`, `PullRequest`, `Discussion`, `Commit`, `Release`, and `CheckSuite` are eligible for the catch-all hush action. Unsupported, unknown, sensitive, administrative, and security-related subject types are safety-kept.
-
-> The historical configuration key `external_organization_issues` is retained, but its protection now intentionally applies to all notification subject types.
+Adding a new protection is now a rule you write rather than a new configuration field: `state: closed`, a repository glob, and an age threshold all parse today.
 
 ## Development
 

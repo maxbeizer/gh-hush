@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** Replace the flat `keep`/`hush` booleans with `version: 3`: an explicit `identity`, a terminal `defaults.action`, a `defaults.on_missing_evidence` safety posture, and an ordered list of data-described `rules` evaluated first-match-wins. The matching rule's `name` is the evidence reported in previews.
+- Express conditions as a closed, composable vocabulary (`any`, `all`, `not` over `repository`, `subject_type`, `state`, `state_not`, `reason`, `author`, `assignee`, `review_requested`, `review_requested_team`, `mentions_user`, `mentions_team`, `age`), so new protections are rules users write rather than new configuration fields and Go branches. Repository matching supports globs such as `github/dependency-*`, and `state`/`state_not` support `open`, `closed`, `locked`, `merged`, `draft`, and `answered`.
+- Derive evidence acquisition from evaluation: each predicate fetches only the GitHub resource it inspects, at most once per notification, which removes the hand-maintained mirror between evidence planning and classification.
+- Keep safety non-configurable and evaluated before any rule: only `Issue`, `PullRequest`, `Discussion`, `Commit`, `Release`, and `CheckSuite` are eligible for hushing.
+- Write the version 3 recommended policy from `gh hush init-config`, reproducing the previous default protections as explicit, editable rules.
+
+### Added
+
+- Add `--quiet` to suppress the preview and print only a concise result to stderr.
+- Add `gh hush migrate-config`, which mechanically rewrites a pre-v3 configuration as an equivalent version 3 policy. It previews by default and requires `--write` to rewrite the file in place, keeping a `.bak` backup.
+
+### Fixed
+
+- Reject recursive and overly deep rule conditions during decoding instead of crashing with a stack overflow.
+- Evaluate `all` with defensible indeterminate semantics: a conclusive non-match wins over an evidence-limited sibling regardless of predicate order.
+- Scope `mentions_team` to the notification repository's owner, matching the `review_requested_team` behavior.
+- Require rule condition values to be non-empty strings, restrict `state`/`state_not` to `open`, `closed`, `locked`, `merged`, `draft`, and `answered`, and require `search` to accompany exactly one mention predicate, keeping the JSON Schema and runtime parser in agreement.
+- Force owner-only (`0600`) permissions on the migrated configuration and its `.bak` backup, and reject unknown fields or multiple documents in the source configuration during migration.
+
 ## [0.3.0] - 2026-09-09
 
 ### Added
@@ -106,7 +127,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 - `--dry-run` for a guaranteed preview-only run.
 - Initial release.
 
-[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/maxbeizer/gh-hush/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/maxbeizer/gh-hush/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/maxbeizer/gh-hush/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/maxbeizer/gh-hush/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/maxbeizer/gh-hush/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/maxbeizer/gh-hush/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/maxbeizer/gh-hush/compare/v0.1.2...v0.1.3

@@ -20,17 +20,33 @@ import (
 )
 
 const validConfigYAML = `
-user: octocat
+version: 3
+identity:
+  user: octocat
+  organization: github
+  teams:
+    - github/notifications
+defaults:
+  action: hush
+  on_missing_evidence: keep
+rules:
+  - name: keep work outside my organization
+    action: keep
+    when:
+      repository:
+        owner_not: github
+  - name: keep personal mentions
+    action: keep
+    when:
+      reason: [mention]
+`
+
+const legacyConfigYAML = `user: octocat
 github_organization: github
 team_slugs:
   - github/notifications
 keep:
-  external_organization_issues: true
   personally_mentioned: true
-  personally_assigned: true
-  individually_review_requested: true
-  active_team_review_requested_pull_requests: true
-  authored_by_user: true
   team_mentioned_discussions: true
 hush:
   all_other_notifications: true
@@ -78,9 +94,8 @@ func TestInitConfigCreatesValidConservativePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generated configuration is invalid: %v", err)
 	}
-	if cfg.User != "octocat" || cfg.GitHubOrganization != "github" || len(cfg.TeamSlugs) != 1 ||
-		!config.Enabled(cfg.Keep.ExternalOrganizationIssues) || !config.Enabled(cfg.Keep.TeamMentionedDiscussions) ||
-		!config.Enabled(cfg.Hush.AllOtherNotifications) {
+	if cfg.Identity.User != "octocat" || cfg.Identity.Organization != "github" || len(cfg.Identity.Teams) != 1 ||
+		cfg.Defaults.Action != config.ActionHush || cfg.Defaults.OnMissingEvidence != config.OnMissingKeep || len(cfg.Rules) == 0 {
 		t.Fatalf("generated configuration=%#v", cfg)
 	}
 	if !strings.Contains(out.String(), "Created conservative starter configuration: "+path) {
@@ -118,7 +133,7 @@ func TestNoArgsRunsDefaultOperation(t *testing.T) {
 	called := false
 	command := newRootCommand(io.Discard, io.Discard, func(_ *cobra.Command, _, _ io.Writer, cfg config.Config, dry, confirm, quiet, debug bool) error {
 		called = true
-		if cfg.User != "octocat" || dry || confirm || quiet || debug {
+		if cfg.Identity.User != "octocat" || dry || confirm || quiet || debug {
 			t.Fail()
 		}
 		return nil
@@ -178,12 +193,86 @@ func TestValidateConfigRejectsExplicitEmptyPath(t *testing.T) {
 
 func TestValidateConfigReportsInvalidSchema(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yml")
-	if err := os.WriteFile(path, []byte("user: octocat\nunexpected: true\n"), 0600); err != nil {
+	if err := os.WriteFile(path, []byte("version: 3\nunexpected: true\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	command := NewRootCommand(io.Discard, io.Discard)
 	command.SetArgs([]string{"validate-config", "--config", path})
 	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), `unknown configuration field "unexpected"`) {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestMigrateConfigPreviewsByDefaultAndWritesWithBackup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(legacyConfigYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	command := NewRootCommand(&out, io.Discard)
+	command.SetArgs([]string{"migrate-config", "--config", path})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "version: 3") || !strings.Contains(out.String(), "Preview only") {
+		t.Fatalf("preview output=%q", out.String())
+	}
+	if unchanged, err := os.ReadFile(path); err != nil || string(unchanged) != legacyConfigYAML {
+		t.Fatalf("preview rewrote the file: %q err=%v", unchanged, err)
+	}
+
+	out.Reset()
+	command = NewRootCommand(&out, io.Discard)
+	command.SetArgs([]string{"migrate-config", "--config", path, "--write"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("migrated configuration is invalid: %v", err)
+	}
+	if cfg.Version != config.Version || cfg.Identity.User != "octocat" || len(cfg.Rules) == 0 {
+		t.Fatalf("migrated configuration=%#v", cfg)
+	}
+	backup, err := os.ReadFile(path + ".bak")
+	if err != nil || string(backup) != legacyConfigYAML {
+		t.Fatalf("backup=%q err=%v", backup, err)
+	}
+}
+
+func TestMigrateConfigWriteForcesOwnerOnlyPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	if err := os.WriteFile(path, []byte(legacyConfigYAML), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".bak", []byte("stale"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"migrate-config", "--config", path, "--write"})
+	if err := command.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, target := range []string{path, path + ".bak"} {
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Fatalf("%s permissions = %o, want 0600", target, perm)
+		}
+	}
+}
+
+func TestMigrateConfigRejectsAnAlreadyCurrentConfiguration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(validConfigYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := NewRootCommand(io.Discard, io.Discard)
+	command.SetArgs([]string{"migrate-config", "--config", path})
+	if err := command.Execute(); err == nil || !strings.Contains(err.Error(), "already version 3") {
 		t.Fatalf("error=%v", err)
 	}
 }
@@ -409,10 +498,10 @@ func notification(id, reason string) model.Notification {
 	return model.Notification{ID: id, Unread: true, Reason: reason, Repository: model.Repository{FullName: "github/repo"}, Subject: model.Subject{Type: "Issue", URL: "subject"}}
 }
 func testConfig() config.Config {
-	on := true
-	off := false
-	cfg := config.Config{User: "octocat", GitHubOrganization: "github", Keep: config.Keep{ExternalOrganizationIssues: &on, PersonallyMentioned: &on, PersonallyAssigned: &off, IndividuallyReviewRequested: &off, AuthoredByUser: &off, TeamMentionedDiscussions: &off}}
-	cfg.Hush.AllOtherNotifications = &on
+	cfg, err := config.Parse([]byte(validConfigYAML))
+	if err != nil {
+		panic(err)
+	}
 	return cfg
 }
 

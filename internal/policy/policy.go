@@ -1,29 +1,20 @@
+// Package policy evaluates the ordered v3 rule list against a notification,
+// acquiring only the GitHub evidence the matching predicates inspect.
 package policy
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"regexp"
-	"strings"
 
 	"github.com/maxbeizer/gh-hush/internal/config"
 	"github.com/maxbeizer/gh-hush/internal/model"
+	"github.com/maxbeizer/gh-hush/internal/predicate"
 	"github.com/maxbeizer/gh-hush/internal/reporturl"
 )
 
 const (
-	ruleExternalOrganization = "keep.external_organization"
-	rulePersonalMention      = "keep.personal_mention"
-	rulePersonalAssign       = "keep.personal_assignment"
-	ruleIndividualReview     = "keep.individual_review_request"
-	ruleActiveTeamReview     = "keep.active_team_review_request"
-	ruleWatchedRepository    = "keep.watched_repository"
-	ruleUserAuthored         = "keep.user_authored_work"
-	ruleDiscussionTeam       = "keep.discussion_team_mention"
-	ruleSafetyFailure        = "safety.keep_on_enrichment_failure"
-	ruleSafetyUnsupported    = "safety.keep_unsupported_subject_type"
-	ruleAllOther             = "hush.all_other_notifications"
+	ruleSafetyUnsupported = "safety.keep_unsupported_subject_type"
+	ruleSafetyFailure     = "safety.keep_on_missing_evidence"
+	ruleDefault           = "defaults.action"
 )
 
 var hushableSubjectTypes = map[string]struct{}{
@@ -38,8 +29,8 @@ type EvidenceSource interface {
 	FetchDiscussionComments(context.Context, model.Notification) ([]model.Resource, error)
 }
 
-// Evaluator owns evidence selection and acquisition, safety handling, keep
-// rules, the explicit hush allowlist, and production of the final decision.
+// Evaluator owns evidence selection and acquisition, safety handling, ordered
+// rule evaluation, and production of the final decision.
 type Evaluator struct {
 	cfg    config.Config
 	source EvidenceSource
@@ -50,8 +41,7 @@ func NewEvaluator(cfg config.Config, source EvidenceSource) *Evaluator {
 }
 
 // Evaluate produces a policy decision using only classification-required
-// evidence. In particular, application revalidation does not make requests
-// solely to improve a report URL.
+// evidence.
 func (e *Evaluator) Evaluate(ctx context.Context, thread model.Notification) model.Decision {
 	return e.evaluate(ctx, thread, false)
 }
@@ -63,234 +53,71 @@ func (e *Evaluator) EvaluateForPreview(ctx context.Context, thread model.Notific
 	return e.evaluate(ctx, thread, true)
 }
 
-func (e *Evaluator) evaluate(ctx context.Context, thread model.Notification, resolveDisplayURL bool) model.Decision {
-	requirements := e.evidenceRequirements(thread)
-	var evidence evaluationEvidence
-	if requirements.subject {
-		// FetchSubject intentionally handles an empty API URL as an error. Required
-		// evidence must never be skipped merely because the URL is absent.
-		evidence.subject, evidence.subjectErr = e.source.FetchSubject(ctx, thread)
-	}
-	if requirements.discussionComments {
-		evidence.discussionComments, evidence.discussionCommentsErr = e.source.FetchDiscussionComments(ctx, thread)
-	}
-
-	displaySubject := evidence.subject
-	if resolveDisplayURL && !requirements.subject && thread.Subject.URL != "" {
-		// Do not place this resource in classification evidence: fields returned by
-		// a display-only request must not add assignment, authorship, or other rules.
-		displaySubject, _ = e.source.FetchSubject(ctx, thread)
-	}
-	decision := e.decide(thread, requirements, evidence)
-	repositoryURL := reporturl.Repository(thread.Repository.HTMLURL, thread.Repository.FullName)
-	decision.URL = reporturl.Safe(displaySubject.HTMLURL, repositoryURL)
-	return decision
-}
-
-type evidenceRequirements struct {
-	subject             bool
-	pullRequestState    bool
-	watchedSubjectState bool
-	discussionComments  bool
-}
-
-type evaluationEvidence struct {
-	subject               model.Resource
-	discussionComments    []model.Resource
-	subjectErr            error
-	discussionCommentsErr error
-}
-
 func isHushableSubjectType(subjectType string) bool {
 	_, ok := hushableSubjectTypes[subjectType]
 	return ok
 }
 
-func (e *Evaluator) evidenceRequirements(thread model.Notification) evidenceRequirements {
-	if !isHushableSubjectType(thread.Subject.Type) {
-		return evidenceRequirements{}
-	}
-	repositoryOrg := strings.SplitN(thread.Repository.FullName, "/", 2)[0]
-	watched, isWatched := e.cfg.WatchedRepository(thread.Repository.FullName)
-	if (config.Enabled(e.cfg.Keep.ExternalOrganizationIssues) && !strings.EqualFold(repositoryOrg, e.cfg.GitHubOrganization)) ||
-		(isWatched && config.Enabled(watched.AllNotifications)) ||
-		(config.Enabled(e.cfg.Keep.PersonallyMentioned) && thread.Reason == "mention") ||
-		(config.Enabled(e.cfg.Keep.PersonallyAssigned) && thread.Reason == "assign") ||
-		(config.Enabled(e.cfg.Keep.AuthoredByUser) && thread.Reason == "author") {
-		// The action is already conclusively Keep; no API evidence is required.
-		return evidenceRequirements{}
-	}
-	var requirements evidenceRequirements
-	t := thread.Subject.Type
-	if config.Enabled(e.cfg.Keep.PersonallyAssigned) && thread.Reason != "assign" && (t == "Issue" || t == "PullRequest") {
-		requirements.subject = true
-	}
-	if config.Enabled(e.cfg.Keep.IndividuallyReviewRequested) && t == "PullRequest" {
-		requirements.subject = true
-	}
-	if config.Enabled(e.cfg.Keep.ActiveTeamReviewRequestedPullRequests) && len(e.cfg.TeamSlugs) > 0 && t == "PullRequest" {
-		requirements.subject = true
-		requirements.pullRequestState = true
-	}
-	if config.Enabled(e.cfg.Keep.AuthoredByUser) && thread.Reason != "author" {
-		requirements.subject = true
-	}
-	if config.Enabled(e.cfg.Keep.TeamMentionedDiscussions) && len(e.cfg.TeamSlugs) > 0 && t == "Discussion" {
-		requirements.subject = true
-		requirements.discussionComments = true
-	}
-	if isWatched && config.Enabled(watchedSubjectCapability(watched, t)) {
-		requirements.subject = true
-		requirements.watchedSubjectState = true
-	}
-	return requirements
-}
+func (e *Evaluator) evaluate(ctx context.Context, thread model.Notification, resolveDisplayURL bool) model.Decision {
+	evidence := predicate.NewEvidence(thread, e.cfg.PredicateIdentity(),
+		func() (model.Resource, error) { return e.source.FetchSubject(ctx, thread) },
+		func() ([]model.Resource, error) { return e.source.FetchDiscussionComments(ctx, thread) },
+	)
+	decision := e.decide(thread, evidence)
 
-// watchedSubjectCapability returns the watched-repository capability governing
-// a subject type, or nil when the type has no open/closed capability.
-func watchedSubjectCapability(watched config.WatchedRepository, subjectType string) *bool {
-	switch subjectType {
-	case "PullRequest":
-		return watched.OpenPullRequests
-	case "Issue":
-		return watched.OpenIssues
-	case "Discussion":
-		return watched.OpenDiscussions
+	displaySubject := evidence.SubjectValue()
+	if resolveDisplayURL && !evidence.SubjectFetched() && thread.Subject.URL != "" {
+		// A display-only request must not add classification evidence.
+		displaySubject, _ = e.source.FetchSubject(ctx, thread)
 	}
-	return nil
-}
-
-func (e *Evaluator) decide(thread model.Notification, requirements evidenceRequirements, evidence evaluationEvidence) model.Decision {
-	decision := model.Decision{Thread: thread}
-	repositoryOrg := strings.SplitN(thread.Repository.FullName, "/", 2)[0]
-	if config.Enabled(e.cfg.Keep.ExternalOrganizationIssues) && !strings.EqualFold(repositoryOrg, e.cfg.GitHubOrganization) {
-		decision.Rules = append(decision.Rules, model.Rule{ID: ruleExternalOrganization, Evidence: fmt.Sprintf("repository organization %q differs from configured organization %q", repositoryOrg, e.cfg.GitHubOrganization)})
-	}
-	if config.Enabled(e.cfg.Keep.PersonallyMentioned) && thread.Reason == "mention" {
-		decision.Rules = append(decision.Rules, model.Rule{ID: rulePersonalMention, Evidence: `GitHub notification reason is "mention"`})
-	}
-	if config.Enabled(e.cfg.Keep.PersonallyAssigned) && (thread.Reason == "assign" || containsUser(evidence.subject.Assignees, e.cfg.User)) {
-		decision.Rules = append(decision.Rules, model.Rule{ID: rulePersonalAssign, Evidence: fmt.Sprintf("%q is personally assigned", e.cfg.User)})
-	}
-	if config.Enabled(e.cfg.Keep.IndividuallyReviewRequested) && containsUser(evidence.subject.RequestedReviewers, e.cfg.User) {
-		decision.Rules = append(decision.Rules, model.Rule{ID: ruleIndividualReview, Evidence: fmt.Sprintf("%q appears in requested_reviewers; team requests alone do not match", e.cfg.User)})
-	}
-	if config.Enabled(e.cfg.Keep.ActiveTeamReviewRequestedPullRequests) && thread.Subject.Type == "PullRequest" && evidence.subject.State == "open" {
-		for _, team := range matchingRequestedTeams(e.cfg.TeamSlugs, evidence.subject.RequestedTeams, thread.Repository.FullName) {
-			decision.Rules = append(decision.Rules, model.Rule{ID: ruleActiveTeamReview, Evidence: fmt.Sprintf("open pull request currently requests review from @%s", team)})
-		}
-	}
-	if config.Enabled(e.cfg.Keep.AuthoredByUser) && (thread.Reason == "author" || strings.EqualFold(resourceAuthor(evidence.subject), e.cfg.User)) {
-		decision.Rules = append(decision.Rules, model.Rule{ID: ruleUserAuthored, Evidence: fmt.Sprintf("%q authored the notification subject", e.cfg.User)})
-	}
-	if config.Enabled(e.cfg.Keep.TeamMentionedDiscussions) && thread.Subject.Type == "Discussion" {
-		bodies := []string{evidence.subject.Body}
-		for _, comment := range evidence.discussionComments {
-			bodies = append(bodies, comment.Body)
-		}
-		for _, team := range matchingTeamMentions(e.cfg.TeamSlugs, bodies...) {
-			decision.Rules = append(decision.Rules, model.Rule{ID: ruleDiscussionTeam, Evidence: fmt.Sprintf("discussion body or complete comment history contains exact team mention @%s", team)})
-		}
-	}
-	if watched, ok := e.cfg.WatchedRepository(thread.Repository.FullName); ok {
-		switch {
-		case config.Enabled(watched.AllNotifications):
-			decision.Rules = append(decision.Rules, model.Rule{ID: ruleWatchedRepository, Evidence: fmt.Sprintf("watched repository %q keeps all notifications", thread.Repository.FullName)})
-		case config.Enabled(watchedSubjectCapability(watched, thread.Subject.Type)) && watchedSubjectIsOpen(thread.Subject.Type, evidence.subject):
-			decision.Rules = append(decision.Rules, model.Rule{ID: ruleWatchedRepository, Evidence: fmt.Sprintf("watched repository %q keeps open %s subjects", thread.Repository.FullName, thread.Subject.Type)})
-		}
-	}
-	if !isHushableSubjectType(thread.Subject.Type) {
-		decision.Rules = append(decision.Rules, model.Rule{ID: ruleSafetyUnsupported, Evidence: fmt.Sprintf("subject type %q is not in the explicit hush allowlist", thread.Subject.Type)})
-	}
-
-	var evidenceErrors []error
-	if requirements.subject && evidence.subjectErr != nil {
-		evidenceErrors = append(evidenceErrors, evidence.subjectErr)
-	}
-	if requirements.pullRequestState && evidence.subjectErr == nil && evidence.subject.State != "open" && evidence.subject.State != "closed" {
-		evidenceErrors = append(evidenceErrors, fmt.Errorf("pull request state %q is unavailable or unsupported", evidence.subject.State))
-	}
-	if requirements.watchedSubjectState && !requirements.pullRequestState && evidence.subjectErr == nil && !watchedSubjectStateIsKnown(thread.Subject.Type, evidence.subject) {
-		evidenceErrors = append(evidenceErrors, fmt.Errorf("watched repository subject state %q is unavailable or unsupported", evidence.subject.State))
-	}
-	if requirements.discussionComments && evidence.discussionCommentsErr != nil {
-		evidenceErrors = append(evidenceErrors, evidence.discussionCommentsErr)
-	}
-	if evidenceErr := errors.Join(evidenceErrors...); evidenceErr != nil {
-		decision.EnrichmentError = evidenceErr.Error()
-		decision.Rules = append(decision.Rules, model.Rule{ID: ruleSafetyFailure, Evidence: fmt.Sprintf("required classification evidence was unavailable: %v", evidenceErr)})
-	}
-	if len(decision.Rules) > 0 {
-		decision.Action = model.ActionKeep
-		return decision
-	}
-	decision.Action = model.ActionUnsubscribeAndMarkDone
-	decision.Rules = []model.Rule{{ID: ruleAllOther, Evidence: "no enabled keep or safety rule matched after successful evaluation"}}
+	repositoryURL := reporturl.Repository(thread.Repository.HTMLURL, thread.Repository.FullName)
+	decision.URL = reporturl.Safe(displaySubject.HTMLURL, repositoryURL)
 	return decision
 }
 
-func watchedSubjectIsOpen(subjectType string, subject model.Resource) bool {
-	if subject.State == "open" {
-		return true
-	}
-	// GitHub's REST API reports "locked" instead of open/closed for a locked
-	// Discussion. state_reason remains nil when it is open and is populated when
-	// it was closed, which preserves the configured "not closed" semantics.
-	return subjectType == "Discussion" && subject.State == "locked" && subject.StateReason == nil
-}
+func (e *Evaluator) decide(thread model.Notification, evidence *predicate.Evidence) model.Decision {
+	decision := model.Decision{Thread: thread}
 
-func watchedSubjectStateIsKnown(subjectType string, subject model.Resource) bool {
-	if subject.State == "open" || subject.State == "closed" {
-		return true
+	// Safety: subject types outside the explicit hush allowlist are never
+	// hushed, and no user rule can defeat that.
+	if !isHushableSubjectType(thread.Subject.Type) {
+		decision.Action = model.ActionKeep
+		decision.Rules = []model.Rule{{ID: ruleSafetyUnsupported, Evidence: "subject type is not in the explicit hush allowlist"}}
+		return decision
 	}
-	return subjectType == "Discussion" && subject.State == "locked"
-}
 
-func resourceAuthor(resource model.Resource) string {
-	if resource.User.Login != "" {
-		return resource.User.Login
-	}
-	return resource.Author.Login
-}
-
-func containsUser(users []model.User, login string) bool {
-	for _, user := range users {
-		if strings.EqualFold(user.Login, login) {
-			return true
-		}
-	}
-	return false
-}
-
-func matchingRequestedTeams(configured []string, requested []model.Team, repository string) []string {
-	var matches []string
-	repositoryOrg := strings.SplitN(repository, "/", 2)[0]
-	for _, configuredTeam := range configured {
-		parts := strings.SplitN(configuredTeam, "/", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], repositoryOrg) {
+	for _, rule := range e.cfg.Rules {
+		matched, err := rule.When.Match(evidence)
+		if err != nil {
+			if e.cfg.Defaults.OnMissingEvidence == config.OnMissingKeep {
+				decision.Action = model.ActionKeep
+				decision.EnrichmentError = err.Error()
+				decision.Rules = []model.Rule{{ID: ruleSafetyFailure, Evidence: "required classification evidence was unavailable: " + err.Error()}}
+				return decision
+			}
+			// Posture is hush-on-missing: treat the indeterminate rule as a
+			// non-match and continue, but record the warning for the report.
+			if decision.EnrichmentError == "" {
+				decision.EnrichmentError = err.Error()
+			}
 			continue
 		}
-		for _, requestedTeam := range requested {
-			if strings.EqualFold(parts[1], requestedTeam.Slug) {
-				matches = append(matches, configuredTeam)
-				break
+		if matched {
+			decision.Rules = []model.Rule{{ID: rule.Name, Evidence: rule.When.Describe()}}
+			if rule.Action == config.ActionKeep {
+				decision.Action = model.ActionKeep
+			} else {
+				decision.Action = model.ActionUnsubscribeAndMarkDone
 			}
+			return decision
 		}
 	}
-	return matches
-}
 
-func matchingTeamMentions(teams []string, bodies ...string) []string {
-	var matches []string
-	for _, team := range teams {
-		pattern := regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_.-])@` + regexp.QuoteMeta(team) + `([^A-Za-z0-9_.-]|$)`)
-		for _, body := range bodies {
-			if pattern.MatchString(body) {
-				matches = append(matches, team)
-				break
-			}
-		}
+	if e.cfg.Defaults.Action == config.ActionKeep {
+		decision.Action = model.ActionKeep
+	} else {
+		decision.Action = model.ActionUnsubscribeAndMarkDone
 	}
-	return matches
+	decision.Rules = []model.Rule{{ID: ruleDefault, Evidence: "no rule matched; applied the terminal default action"}}
+	return decision
 }
