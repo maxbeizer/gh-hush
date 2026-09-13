@@ -34,9 +34,13 @@ The complete preview unconditionally shows every discovered notification's URL, 
 
 ### Elapsed timings
 
-gh-hush reports concise, human-readable elapsed times on stderr for the major phases so a large inbox makes it clear where time went, without printing one line per request or notification:
+gh-hush reports progress while it fetches paginated unread notifications, then concise, human-readable elapsed times on stderr for the major phases so a large inbox makes it clear where time went, without printing one line per request or notification. Interactive fetch progress updates in place; redirected output is reported every 500 notifications.
 
 ```text
+Fetching unread notifications (read-only)… 0 found
+Fetching unread notifications (read-only)… 500 found
+Fetching unread notifications (read-only)… 1000 found
+✓ Fetched 1120 unread notifications
 authenticated and listed 1120 unread notifications in 2.1s
 classified 1120/1120 notifications in 18.4s
 generated preview report in 120ms

@@ -5,6 +5,48 @@ import (
 	"testing"
 )
 
+func TestListingProgressInteractive(t *testing.T) {
+	var output strings.Builder
+	progress := newListingProgress(&output, true)
+	progress.start()
+	progress.update(100)
+	progress.update(175)
+	progress.finish(true)
+
+	got := output.String()
+	for _, text := range []string{
+		"⠋ Fetching unread notifications (read-only)… 0 found",
+		"⠙ Fetching unread notifications (read-only)… 100 found",
+		"⠹ Fetching unread notifications (read-only)… 175 found",
+		"✓ Fetched 175 unread notifications",
+	} {
+		if !strings.Contains(got, text) {
+			t.Errorf("output missing %q: %q", text, got)
+		}
+	}
+	if strings.Count(got, "\n") != 1 {
+		t.Fatalf("interactive progress must leave exactly one completed line: %q", got)
+	}
+}
+
+func TestListingProgressNonInteractiveIsThrottled(t *testing.T) {
+	var output strings.Builder
+	progress := newListingProgress(&output, false)
+	progress.start()
+	for count := 100; count <= 1200; count += 100 {
+		progress.update(count)
+	}
+	progress.finish(true)
+
+	want := "Fetching unread notifications (read-only)… 0 found\n" +
+		"Fetching unread notifications (read-only)… 500 found\n" +
+		"Fetching unread notifications (read-only)… 1000 found\n" +
+		"✓ Fetched 1200 unread notifications\n"
+	if got := output.String(); got != want {
+		t.Fatalf("output=%q want=%q", got, want)
+	}
+}
+
 func TestClassificationProgressInteractiveUpdatesInPlaceAndFinishesCleanly(t *testing.T) {
 	var output strings.Builder
 	progress := newClassificationProgress(&output, true)

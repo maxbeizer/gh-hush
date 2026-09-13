@@ -97,6 +97,75 @@ func (p *phaseProgress) replaceLine(line string) {
 	p.live = true
 }
 
+type listingProgress struct {
+	output        io.Writer
+	interactive   bool
+	count         int
+	lastReported  int
+	frame         int
+	previousWidth int
+	live          bool
+}
+
+func newListingProgress(output io.Writer, interactive bool) *listingProgress {
+	return &listingProgress{output: output, interactive: interactive}
+}
+
+func (p *listingProgress) start() { p.render(0) }
+
+func (p *listingProgress) update(count int) {
+	p.count = count
+	if p.interactive {
+		p.frame = (p.frame + 1) % len(progressSpinnerFrames)
+		p.render(count)
+		return
+	}
+	// Keep redirected output useful without producing a line for every page of
+	// a very large inbox.
+	if count-p.lastReported >= 500 {
+		p.render(count)
+		p.lastReported = count
+	}
+}
+
+func (p *listingProgress) finish(succeeded bool) {
+	if !succeeded {
+		if p.interactive && p.live {
+			_, _ = fmt.Fprintln(p.output)
+			p.live = false
+		}
+		return
+	}
+	line := fmt.Sprintf("✓ Fetched %d unread %s", p.count, notificationWord(p.count))
+	if p.interactive {
+		p.replaceLine(line)
+		_, _ = fmt.Fprintln(p.output)
+		p.live = false
+		return
+	}
+	_, _ = fmt.Fprintln(p.output, line)
+}
+
+func (p *listingProgress) render(count int) {
+	line := fmt.Sprintf("Fetching unread notifications (read-only)… %d found", count)
+	if p.interactive {
+		p.replaceLine(progressSpinnerFrames[p.frame] + " " + line)
+		return
+	}
+	_, _ = fmt.Fprintln(p.output, line)
+}
+
+func (p *listingProgress) replaceLine(line string) {
+	width := utf8.RuneCountInString(line)
+	padding := max(0, p.previousWidth-width)
+	if p.live {
+		_, _ = fmt.Fprint(p.output, "\r")
+	}
+	_, _ = fmt.Fprintf(p.output, "%s%s", line, strings.Repeat(" ", padding))
+	p.previousWidth = width
+	p.live = true
+}
+
 type classificationProgress struct {
 	phase *phaseProgress
 }

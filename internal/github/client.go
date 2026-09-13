@@ -69,8 +69,25 @@ func (c *CLIClient) CurrentUser(ctx context.Context) (string, error) {
 // inbox. Restricting discovery to unread notifications avoids reprocessing
 // that ambiguous history.
 func (c *CLIClient) ListNotifications(ctx context.Context) ([]model.Notification, error) {
+	return c.ListNotificationsWithProgress(ctx, nil)
+}
+
+// ListNotificationsWithProgress reports the cumulative number of notifications
+// decoded after each page. The callback runs synchronously and must not block.
+func (c *CLIClient) ListNotificationsWithProgress(ctx context.Context, progress func(int)) ([]model.Notification, error) {
 	var notifications []model.Notification
-	if err := getPages(c.transport, ctx, "/notifications?per_page=100", &notifications); err != nil {
+	err := c.transport.Pages(ctx, "/notifications?per_page=100", func(response transport.Response) error {
+		var page []model.Notification
+		if err := json.Unmarshal(response.Body, &page); err != nil {
+			return fmt.Errorf("decode paginated GitHub API response for %q: %w", response.Endpoint, err)
+		}
+		notifications = append(notifications, page...)
+		if progress != nil {
+			progress(len(notifications))
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, fmt.Errorf("list unread notifications: %w", err)
 	}
 	return notifications, nil
