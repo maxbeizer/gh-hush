@@ -55,9 +55,15 @@ func TestListNotificationsUsesUnreadOnlyDefaultAndPaginates(t *testing.T) {
 		_, _ = w.Write([]byte(`[{"id":"first","unread":true}]`))
 	}))
 	defer server.Close()
-	got, err := testClient(server).ListNotifications(context.Background())
+	var progress []int
+	got, err := testClient(server).ListNotificationsWithProgress(context.Background(), func(count int) {
+		progress = append(progress, count)
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(progress, []int{1, 2}) {
+		t.Fatalf("progress=%v", progress)
 	}
 	ids := []string{got[0].ID, got[1].ID}
 	if !reflect.DeepEqual(ids, []string{"first", "second"}) {

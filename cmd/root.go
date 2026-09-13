@@ -190,7 +190,14 @@ func run(command *cobra.Command, stdout, stderr io.Writer, cfg config.Config, dr
 		return fmt.Errorf("config user %q does not match authenticated gh user %q", cfg.Identity.User, login)
 	}
 	listCtx := diagnostic.WithPhase(ctx, "listing")
-	threads, err := client.ListNotifications(listCtx)
+	listingOutput := stderr
+	if quiet {
+		listingOutput = io.Discard
+	}
+	listingProgress := newListingProgress(listingOutput, isTerminal(stderr) && !diagnostic.Enabled(ctx))
+	listingProgress.start()
+	threads, err := client.ListNotificationsWithProgress(listCtx, listingProgress.update)
+	listingProgress.finish(err == nil)
 	if err != nil {
 		diagnostic.Log(listCtx, "operation_failed", diagnostic.String("operation", "list_notifications"))
 		return fmt.Errorf("fetch unread GitHub notifications: %w", err)
