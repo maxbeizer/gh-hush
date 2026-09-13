@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-13
+
+### Added
+
+- Show read-only progress while fetching paginated unread notifications so large inboxes do not appear to hang, with compact in-place terminal updates and throttled redirected output.
+
 ### Fixed
 
 - Point the configuration error's AI-prompt summary line at `gh hush migrate-config` for legacy-field errors instead of falling back to generic "fix the errors" guidance.
@@ -133,7 +139,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com), and this 
 - `--dry-run` for a guaranteed preview-only run.
 - Initial release.
 
-[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/maxbeizer/gh-hush/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/maxbeizer/gh-hush/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/maxbeizer/gh-hush/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/maxbeizer/gh-hush/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/maxbeizer/gh-hush/compare/v0.2.1...v0.2.2
